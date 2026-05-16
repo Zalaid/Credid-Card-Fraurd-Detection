@@ -810,155 +810,426 @@ docker-compose down
 
 ## Step 10 — CI/CD with GitHub Actions
 
-Every time you push code to GitHub, the pipeline automatically runs tests, builds a Docker image, pushes it to Docker Hub, and deploys the new version to Render — all without any manual steps.
+### What is CI/CD and Why Does It Matter?
 
-### `.github/workflows/ci-cd.yml`
+**CI (Continuous Integration)** means every time you push code, it is automatically tested. If a test fails, the deployment stops — broken code never reaches users.
 
-The pipeline has three jobs that run in order. If any job fails, the next one doesn't start.
+**CD (Continuous Deployment)** means if all tests pass, the new version is automatically built into a Docker image, pushed to Docker Hub, and deployed to Render — all without you doing anything manually.
 
+**Without CI/CD:**
 ```
-git push to main
-      │
-      ▼
-  ┌─────────┐
-  │  test   │  Install Python 3.11 + deps
-  │         │  Download model files from GitHub Release
-  │         │  Run pytest tests/test_api.py (14 tests)
-  └────┬────┘
-       │ all pass
-       ▼
-  ┌──────────────────┐
-  │  build-and-push  │  Download model files from GitHub Release
-  │                  │  docker build (using Dockerfile)
-  │                  │  docker push → Docker Hub :latest + :commit-sha
-  └────────┬─────────┘
-           │ image pushed
-           ▼
-      ┌──────────┐
-      │  deploy  │  POST to Render deploy hook URL
-      │          │  Render pulls new image → live URL updates
-      └──────────┘
+You make a change → manually run tests → manually build Docker → manually push to Docker Hub
+→ manually log into Render → manually trigger deploy → hope you didn't forget a step
 ```
 
-**Why download models from GitHub Release in CI?**
-The model files (`xgboost_tuned.pkl`, `scaler.pkl`) are in `.gitignore` so they don't get pushed to GitHub. Instead, they are uploaded once as assets on a GitHub Release (`v1.0.0`). Every CI run downloads them fresh before running tests and before building Docker.
-
-**Why only run `test_api.py` in CI and not all 28 tests?**
-`test_preprocessing.py` and `test_model.py` need the full processed dataset (~500 MB of `.pkl` files). Downloading all of that in CI on every push is wasteful. `test_api.py` (14 tests) covers the thing that actually gets deployed — the API. The training pipeline tests run locally.
-
-**Two Docker tags per push:**
-- `:latest` — always points to the newest version
-- `:abc1234` (git commit SHA) — lets you roll back to any exact version
+**With CI/CD:**
+```
+You make a change → git push → everything else happens automatically in ~3 minutes
+```
 
 ---
 
-### Step 10 Setup — What You Need to Do
+### What GitHub Actions Is
+
+GitHub Actions is a free automation platform built into GitHub. You write a `.yml` file that describes what to do when certain events happen (like a git push). GitHub runs it on their servers — you pay nothing for public repos.
+
+Every run is called a **workflow**. A workflow has **jobs**. Each job runs on a fresh Ubuntu server that GitHub spins up, executes your steps, then destroys.
+
+---
+
+### The Workflow File — `.github/workflows/ci-cd.yml`
+
+GitHub Actions automatically picks up any `.yml` file inside `.github/workflows/`. Our file defines three jobs.
+
+**Trigger — when does the pipeline run?**
+```yaml
+on:
+  push:
+    branches: [main, master]     # runs on every push to main or master
+  pull_request:
+    branches: [main, master]     # also runs when someone opens a pull request
+```
+
+---
+
+### Job 1 — `test`
+
+Runs on every push and every pull request. Purpose: make sure the code actually works before touching Docker or deployment.
+
+```
+GitHub receives push
+        │
+        ▼
+  Fresh Ubuntu server starts
+        │
+        ├── actions/checkout@v4          → downloads your repo code onto the server
+        ├── actions/setup-python@v5      → installs Python 3.11
+        ├── pip install -r requirements.txt → installs all packages
+        │
+        ├── curl → GitHub Release v1.0.0
+        │          downloads xgboost_tuned.pkl  (the trained model)
+        │          downloads scaler.pkl          (the fitted scaler)
+        │          saves them to models/ folder on the server
+        │
+        └── pytest tests/test_api.py -v
+                   runs all 14 API tests
+                   if any test fails → job fails → jobs 2 and 3 never run
+```
+
+**Why download models from GitHub Release?**
+The model files are in `.gitignore` — they are not in the git repo. You upload them once to a GitHub Release (`v1.0.0`) as attached binary files. Every CI run downloads them fresh from that release URL:
+```
+https://github.com/YOUR-USERNAME/fraud-detection/releases/download/v1.0.0/xgboost_tuned.pkl
+https://github.com/YOUR-USERNAME/fraud-detection/releases/download/v1.0.0/scaler.pkl
+```
+This keeps the git repo clean (no large binary files) and the models stay private (not committed to git history).
+
+**Why only `test_api.py` and not all 28 tests?**
+`test_preprocessing.py` and `test_model.py` need the full processed dataset — hundreds of MB of `.pkl` files. Downloading all of that on every push wastes CI time. `test_api.py` (14 tests) verifies the exact thing being deployed — the API endpoint. The training pipeline tests run locally where the data already exists.
+
+---
+
+### Job 2 — `build-and-push`
+
+Runs only after Job 1 passes, and only on a direct push (not on pull requests — no point building Docker for unmerged code).
+
+```
+Job 1 passed
+      │
+      ▼
+  Fresh Ubuntu server starts
+      │
+      ├── actions/checkout@v4          → downloads repo code
+      │
+      ├── curl → GitHub Release v1.0.0
+      │          downloads xgboost_tuned.pkl and scaler.pkl again
+      │          (this server is fresh — doesn't have Job 1's files)
+      │
+      ├── docker/login-action@v3
+      │          logs into Docker Hub using DOCKERHUB_USERNAME + DOCKERHUB_TOKEN secrets
+      │
+      └── docker/build-push-action@v5
+                 reads the Dockerfile
+                 builds the Docker image (installs packages, copies src/, copies models/)
+                 pushes two tags to Docker Hub:
+                   your-username/fraud-detection-api:latest        ← always newest
+                   your-username/fraud-detection-api:abc1234       ← exact commit SHA
+```
+
+**What are the two Docker tags?**
+- `:latest` — Render always pulls this tag. It always points to the most recent build.
+- `:abc1234` (the git commit SHA) — a permanent snapshot of this exact version. If a bug is introduced, you can roll back to any previous SHA by redeploying that specific tag.
+
+**What are GitHub Secrets?**
+Secrets are encrypted variables stored in your GitHub repo settings. They are injected into the workflow at runtime. The code accesses them with `${{ secrets.DOCKERHUB_USERNAME }}`. They are never visible in logs — GitHub replaces the value with `***`.
+
+| Secret | What it is | Where to get it |
+|--------|-----------|----------------|
+| `DOCKERHUB_USERNAME` | Your Docker Hub username | Your Docker Hub account |
+| `DOCKERHUB_TOKEN` | An access token (not your password) | Docker Hub → Account Settings → Security → New Access Token |
+| `RENDER_DEPLOY_HOOK` | A webhook URL that triggers Render to redeploy | Render → your service → Settings → Deploy Hook |
+
+---
+
+### Job 3 — `deploy`
+
+Runs only after Job 2 passes.
+
+```
+Docker image pushed to Docker Hub
+            │
+            ▼
+  curl -X POST "https://api.render.com/deploy/srv-xxxxx?key=xxxxx"
+            │
+            ▼
+  Render receives the POST request
+  Render pulls the new :latest image from Docker Hub
+  Render stops the old container
+  Render starts the new container
+  Live URL now serves the new version
+```
+
+This is a webhook — Render gives you a special URL (the deploy hook). When anything sends a POST request to that URL, Render automatically redeploys. GitHub Actions sends that POST request at the end of every successful pipeline run.
+
+---
+
+### Full Pipeline Flow (Everything Together)
+
+```
+You type: git push origin master
+                │
+                ▼
+        GitHub receives push
+                │
+         ┌──────────────────────────────────────────────────────┐
+         │  JOB 1 — test (runs on GitHub's Ubuntu server)       │
+         │                                                      │
+         │  1. Checkout code from repo                          │
+         │  2. Install Python 3.11                              │
+         │  3. pip install -r requirements.txt                  │
+         │  4. Download xgboost_tuned.pkl from GitHub Release   │
+         │  5. Download scaler.pkl from GitHub Release          │
+         │  6. pytest tests/test_api.py -v                      │
+         │       ✓ test_health_returns_200                      │
+         │       ✓ test_predict_fraud_transaction               │
+         │       ✓ test_predict_missing_field_returns_422       │
+         │       ... 14 tests total                             │
+         │                                                      │
+         │  All passed? → continue     Any failed? → STOP here  │
+         └──────────────────────────────────────────────────────┘
+                │ all 14 passed
+                ▼
+         ┌──────────────────────────────────────────────────────┐
+         │  JOB 2 — build-and-push (fresh Ubuntu server)        │
+         │                                                      │
+         │  1. Checkout code                                     │
+         │  2. Download model files from GitHub Release          │
+         │  3. Log in to Docker Hub (using secrets)             │
+         │  4. docker build                                     │
+         │       FROM python:3.11-slim                          │
+         │       pip install requirements.txt                   │
+         │       COPY src/                                      │
+         │       COPY models/xgboost_tuned.pkl                  │
+         │       COPY models/scaler.pkl                         │
+         │  5. docker push :latest                              │
+         │  6. docker push :abc1234 (commit SHA)                │
+         │                                                      │
+         │  Image on Docker Hub? → continue    Failed? → STOP   │
+         └──────────────────────────────────────────────────────┘
+                │ image pushed
+                ▼
+         ┌──────────────────────────────────────────────────────┐
+         │  JOB 3 — deploy                                      │
+         │                                                      │
+         │  1. curl POST → Render deploy hook URL               │
+         │  2. Render pulls new :latest image from Docker Hub   │
+         │  3. Render restarts container with new image         │
+         │  4. Live URL now serves updated code                 │
+         └──────────────────────────────────────────────────────┘
+                │
+                ▼
+  https://fraud-detection-api.onrender.com  ← updated in ~2 min
+```
+
+**Total time from `git push` to live update: ~3–5 minutes**
+
+---
+
+### What Happens on a Pull Request (vs a Direct Push)
+
+| Event | Job 1 (test) | Job 2 (build) | Job 3 (deploy) |
+|-------|-------------|--------------|---------------|
+| `git push` to master | Runs | Runs | Runs |
+| Pull request opened | Runs | Skipped | Skipped |
+
+Pull requests only run tests — they don't deploy. This means you can review code changes safely without accidentally pushing broken code to production.
+
+---
+
+### How to Watch It Run
+
+After pushing, go to your GitHub repo → **Actions** tab:
+
+```
+┌──────────────────────────────────────────────────────────┐
+│  Actions                                                 │
+│                                                          │
+│  ● CI/CD   trigger first CI run   2 minutes ago          │
+│    ├── ✓  test            38s                            │
+│    ├── ✓  build-and-push  1m 42s                         │
+│    └── ✓  deploy          4s                             │
+└──────────────────────────────────────────────────────────┘
+```
+
+Click any job to see every step with its output. If something fails, the red ✗ tells you exactly which step and what the error was.
+
+---
+
+### Step 10 Setup — One-Time Configuration
 
 #### 1. Create the GitHub repository and push
 
+On github.com → New repository → Name: `fraud-detection` → Public → Create. Then:
+
 ```bash
-# On GitHub: create a new public repo named "fraud-detection" (no README, no .gitignore)
-# Then in your project folder:
 git remote add origin https://github.com/YOUR-USERNAME/fraud-detection.git
 git push -u origin master
 ```
 
 #### 2. Create a GitHub Release with the model files
 
-The CI pipeline downloads models from Release `v1.0.0`. Create it once:
+The CI pipeline needs to download `xgboost_tuned.pkl` and `scaler.pkl` from somewhere since they are gitignored. You upload them once to a GitHub Release.
 
-1. Go to your GitHub repo → **Releases** → **Create a new release**
-2. Tag: `v1.0.0` | Title: `v1.0.0 — initial model`
-3. Click **Attach binaries** and upload these two files from your local `models/` folder:
+1. GitHub repo → **Releases** → **Create a new release**
+2. Tag: `v1.0.0` → Title: `v1.0.0`
+3. **Attach binaries** → upload from your local `models/` folder:
    - `xgboost_tuned.pkl`
    - `scaler.pkl`
-4. Click **Publish release**
+4. **Publish release**
 
-#### 3. Create a Docker Hub account and access token
+#### 3. Create Docker Hub access token
 
 1. Sign up at [hub.docker.com](https://hub.docker.com) (free)
-2. Go to **Account Settings → Security → New Access Token**
-3. Name it `github-actions`, permission: Read & Write
-4. Copy the token (shown only once)
+2. **Account Settings → Security → New Access Token**
+3. Name: `github-actions` | Permission: Read & Write
+4. Copy the token — shown only once
 
 #### 4. Add GitHub Secrets
 
-Go to your GitHub repo → **Settings → Secrets and variables → Actions → New repository secret**. Add three secrets:
+GitHub repo → **Settings → Secrets and variables → Actions → New repository secret**
 
 | Secret name | Value |
 |-------------|-------|
 | `DOCKERHUB_USERNAME` | Your Docker Hub username |
-| `DOCKERHUB_TOKEN` | The access token from step 3 |
-| `RENDER_DEPLOY_HOOK` | The URL from Step 11 below (add after setting up Render) |
+| `DOCKERHUB_TOKEN` | Access token from step 3 |
+| `RENDER_DEPLOY_HOOK` | URL from Render (add after Step 11) |
 
-#### 5. Push any change to trigger the pipeline
+#### 5. Push to trigger the pipeline
 
 ```bash
 git push origin master
 ```
 
-Go to your repo → **Actions** tab to watch the pipeline run live. Each job shows a green tick when it passes.
+Go to **Actions** tab and watch all three jobs go green.
 
 ---
 
 ## Step 11 — Deploy on Render
 
-Render is a free cloud platform. Once set up, every successful CI/CD run automatically redeploys the live API — no manual steps.
+### What is Render?
 
-### What the free tier gives you
+Render is a cloud platform that hosts web applications and APIs. You give it a Docker image, tell it which port to listen on, and it runs the container on its servers — giving you a public HTTPS URL anyone in the world can access.
+
+Think of it like this:
+```
+Your laptop runs the API locally at:  http://localhost:8000
+Render runs the same Docker image at: https://fraud-detection-api-latest-f3iz.onrender.com
+```
+
+The difference is Render's URL is public — anyone with a browser or curl can reach it, 24/7.
+
+---
+
+### What the Free Tier Gives You
 
 | Property | Value |
 |----------|-------|
+| Cost | Free — no credit card needed |
 | RAM | 512 MB |
 | CPU | 0.1 vCPU |
-| Cost | Free |
-| HTTPS | Automatic (free SSL certificate) |
-| Cold start | ~30 seconds after 15 min of no traffic |
-| Custom domain | Supported |
+| HTTPS | Automatic — free SSL certificate, `https://` works out of the box |
+| Custom domain | Supported — you can point your own domain at it |
+| Auto-deploy | Yes — watches Docker Hub for new images and redeploys automatically |
+| Cold start | ~30 seconds after 15 minutes of no traffic |
 
-The cold start means the first request after a period of inactivity takes ~30 seconds. After that, responses are under 100ms. This is acceptable for a portfolio/demo project.
+---
 
-### Step 11 Setup — What You Need to Do
+### What is a Cold Start?
 
-**Prerequisites:** Step 10 must be done first — Docker Hub must have your image pushed.
+Render's free tier saves money by spinning down your container when nobody has used it for 15 minutes. When the next request comes in, Render has to start the container again — this takes about 30 seconds. After that, every request responds in under 100ms as normal.
 
-#### 1. Create a Render account
-
-Sign up at [render.com](https://render.com) (free, no credit card needed).
-
-#### 2. Create a new Web Service
-
-1. Click **New → Web Service**
-2. Choose **"Deploy an existing image from a registry"**
-3. Image URL: `your-dockerhub-username/fraud-detection-api:latest`
-4. Click **Connect**
-
-#### 3. Configure the service
-
-| Setting | Value |
-|---------|-------|
-| Name | `fraud-detection-api` |
-| Region | Oregon (US West) — fastest free tier |
-| Instance Type | **Free** |
-| Port | `8000` |
-
-Click **Create Web Service**. Render will pull the Docker image and deploy it. This takes 2–3 minutes the first time.
-
-#### 4. Verify it's live
-
-Once deployed, Render gives you a URL like:
 ```
-https://fraud-detection-api.onrender.com
+Nobody uses the API for 15 min
+          ↓
+Render shuts the container down (saves resources)
+          ↓
+Someone clicks your CV link
+          ↓
+Render starts the container (30 sec wait — user sees loading)
+          ↓
+Model loads into memory
+          ↓
+All requests now fast (<100ms) until 15 min idle again
 ```
 
-Test it:
+This is why we set up UptimeRobot — it pings the API every 5 minutes so the container never goes to sleep.
+
+---
+
+### How Render Knows When to Redeploy (Auto-Deploy)
+
+When CI/CD finishes building a new Docker image and pushes `:latest` to Docker Hub, Render needs to know there is a new version. There are two ways:
+
+**Deploy Hook (what we use):**
+Render gives you a private URL called a Deploy Hook:
+```
+https://api.render.com/deploy/srv-xxxxx?key=xxxxx
+```
+When anything sends a POST request to this URL, Render immediately pulls the new `:latest` image and redeploys. Our CI/CD workflow sends this POST request at the end of every successful pipeline run.
+
+**Auto-Deploy toggle:**
+Render can also periodically poll Docker Hub to check if `:latest` changed. Enabled in Settings → Auto-Deploy. This is a fallback if the deploy hook isn't configured — it just takes a few extra minutes to detect the new image.
+
+---
+
+### How Render Deploys — Step by Step
+
+When a deploy is triggered (either by deploy hook or auto-detect), here is what Render does internally:
+
+```
+Deploy triggered
+      │
+      ▼
+Render pulls the Docker image from Docker Hub
+  docker pull your-username/fraud-detection-api:latest
+      │
+      ▼
+Render starts a new container from that image
+  → uvicorn src.api.main:app --host 0.0.0.0 --port 8000
+  → model and scaler load from models/ folder inside the image
+  → app is now listening on port 8000
+      │
+      ▼
+Render runs the health check
+  GET /health → must return 200
+      │
+      ▼
+Health check passed → Render switches traffic to the new container
+Old container is stopped and removed
+      │
+      ▼
+Live URL now serves the new version
+```
+
+If the health check fails (e.g. the model failed to load), Render keeps the old container running and marks the new deploy as failed. This means a bad deploy never takes down the live API.
+
+---
+
+### The Deploy Hook — Keeping It Secret
+
+The deploy hook URL contains a private key:
+```
+https://api.render.com/deploy/srv-d84eglt8nd3s73d0g2m0?key=CA_usDvKVZg
+```
+
+Anyone who has this URL can trigger a redeploy of your service. That is why it is stored as a GitHub Secret (`RENDER_DEPLOY_HOOK`) and never written directly in code. In the workflow file it appears as `${{ secrets.RENDER_DEPLOY_HOOK }}` — GitHub substitutes the real value at runtime and replaces it with `***` in any logs.
+
+If the key is ever exposed publicly, go to Render → Settings → Deploy Hook → **Regenerate** to invalidate the old one and get a new key.
+
+---
+
+### The Live API
+
+**Base URL:**
+```
+https://fraud-detection-api-latest-f3iz.onrender.com
+```
+
+| URL | What it does |
+|-----|-------------|
+| `/` | Returns API name, version, model name, and endpoint list |
+| `/health` | Returns `{"status": "ok", "model_loaded": true}` — used to verify the service is running |
+| `/docs` | Swagger UI — interactive browser-based testing, no code needed |
+| `/predict` | POST — send 30 transaction features, get fraud prediction back |
+
+**Test the live API:**
 ```bash
 # Health check
-curl https://fraud-detection-api.onrender.com/health
+curl https://fraud-detection-api-latest-f3iz.onrender.com/health
 # → {"status": "ok", "model_loaded": true}
 
-# Fraud prediction
-curl -X POST https://fraud-detection-api.onrender.com/predict \
+# Known fraud transaction — should return is_fraud: true
+curl -X POST https://fraud-detection-api-latest-f3iz.onrender.com/predict \
   -H "Content-Type: application/json" \
   -d '{
     "Time": 406, "Amount": 0.0,
@@ -971,19 +1242,492 @@ curl -X POST https://fraud-detection-api.onrender.com/predict \
     "V25": 0.0714, "V26": 0.0719, "V27": 0.2127, "V28": 0.0952
   }'
 # → {"is_fraud": true, "fraud_probability": 1.0, "inference_ms": 4.2}
-
-# Interactive Swagger UI
-# Open in browser: https://fraud-detection-api.onrender.com/docs
 ```
 
-#### 5. Get the Deploy Hook URL and add it to GitHub Secrets
+**Interactive Swagger UI (no code needed):**
+Open in browser: `https://fraud-detection-api-latest-f3iz.onrender.com/docs`
 
-1. In Render → your service → **Settings** → scroll down to **Deploy Hook**
-2. Copy the URL (looks like `https://api.render.com/deploy/srv-xxxxx?key=xxxxx`)
-3. Go back to GitHub → **Settings → Secrets → Actions**
-4. Add secret: `RENDER_DEPLOY_HOOK` = the URL you copied
+---
 
-From now on, every `git push` to `main` triggers the full pipeline: tests → Docker build → Docker push → Render redeploy → live URL updated.
+### Step 11 Setup — What Was Done
+
+1. Created account at render.com
+2. New → Web Service → Deploy an existing image from a registry
+3. Image: `your-dockerhub-username/fraud-detection-api:latest`
+4. Port: `8000` | Instance: Free | Region: Oregon
+5. Clicked Create Web Service — Render pulled the image and deployed
+6. Copied Deploy Hook URL from Settings → added to GitHub as `RENDER_DEPLOY_HOOK` secret
+7. Auto-Deploy enabled — Render watches Docker Hub for new `:latest` and redeploys automatically
+
+---
+
+## UptimeRobot — Keeping the API Awake
+
+### What is UptimeRobot?
+
+UptimeRobot is a free monitoring service. You give it a URL and a time interval, and it sends an HTTP request to that URL every N minutes to check if the service is up. If it goes down, it sends you an alert email.
+
+We use it for two purposes:
+1. **Keep the Render free tier awake** — by pinging every 5 minutes, the container never hits the 15-minute idle timeout and never cold-starts
+2. **Uptime monitoring** — if the live API goes down for any reason, UptimeRobot emails you immediately
+
+### How It Works
+
+```
+Every 5 minutes, UptimeRobot does this:
+        │
+        ▼
+GET https://fraud-detection-api-latest-f3iz.onrender.com/health
+        │
+        ├── Response 200 → service is up → record as "up", do nothing
+        │
+        └── Response non-200 or timeout → service is down
+                  → send alert email to you
+                  → mark as "down" in dashboard
+```
+
+Because a request arrives every 5 minutes, Render never sees 15 minutes of inactivity and never spins down the container. The first request from a real user always gets a fast response.
+
+### What Was Set Up
+
+| Setting | Value |
+|---------|-------|
+| Monitor type | HTTP(s) |
+| URL | `https://fraud-detection-api-latest-f3iz.onrender.com/health` |
+| Interval | Every 5 minutes |
+| Alert | Email when down |
+
+### How to Set It Up (for reference)
+
+1. Sign up at [uptimerobot.com](https://uptimerobot.com) — free, no credit card
+2. **Add New Monitor**
+3. Monitor Type: `HTTP(s)`
+4. Friendly Name: `Fraud Detection API`
+5. URL: `https://fraud-detection-api-latest-f3iz.onrender.com/health`
+6. Monitoring Interval: `5 minutes`
+7. Click **Create Monitor**
+
+UptimeRobot starts pinging immediately. You can see the uptime history and response times in the dashboard at any time.
+
+### Why Ping `/health` and Not `/`?
+
+The `/health` endpoint is a lightweight check — it returns a small JSON object and does no computation. The `/` endpoint also works but returns slightly more data. Either works for pinging, but `/health` is the convention for health checks in production systems — it is what Docker, Kubernetes, and load balancers all use to check if a service is alive.
+
+---
+
+### How the Dockerfile Packages the App
+
+Before understanding how Render runs the app, you need to understand what the Dockerfile does — because Render runs exactly what the Dockerfile produces.
+
+A Docker image is like a zip file that contains everything needed to run the app: the operating system, Python, all packages, the source code, and the trained model. Render unzips this image and runs it.
+
+Here is our Dockerfile explained line by line:
+
+```dockerfile
+FROM python:3.11-slim
+```
+Start from a base image that already has Python 3.11 installed on a minimal Linux system. "slim" means no extras — just Python. This keeps the image small (~130 MB base).
+
+```dockerfile
+WORKDIR /app
+```
+Create a folder called `/app` inside the container and make it the working directory. All future commands run from here. When Render starts the container, the app runs from `/app`.
+
+```dockerfile
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+```
+Copy `requirements.txt` from your laptop into the container, then install everything in it. This is done as a separate step before copying the code — Docker caches this layer. If you change only source code (not requirements), Docker skips this layer on the next build and reuses the cached packages. Saves 2–3 minutes per build.
+
+```dockerfile
+COPY src/ ./src/
+```
+Copy the entire `src/` folder (all your Python code — `api/main.py`, `api/schemas.py`, etc.) into `/app/src/` inside the container.
+
+```dockerfile
+COPY models/xgboost_tuned.pkl ./models/xgboost_tuned.pkl
+COPY models/scaler.pkl        ./models/scaler.pkl
+```
+Copy the two model files into `/app/models/` inside the container. This is the key step — the trained model is now permanently baked into the image. Render doesn't need access to your laptop or any external storage. The model travels with the image.
+
+```dockerfile
+EXPOSE 8000
+```
+Tell Docker that the app listens on port 8000. This is documentation — Render uses it to know which port to route traffic to.
+
+```dockerfile
+HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"
+```
+Every 30 seconds, Docker checks if the app is alive by hitting `/health`. If it fails 3 times in a row, Docker marks the container as unhealthy. Render uses this to decide whether a new deploy succeeded.
+
+```dockerfile
+CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+```
+The command that runs when the container starts. Uvicorn is the web server that runs the FastAPI app. `--host 0.0.0.0` means accept connections from anywhere (not just localhost). `--port 8000` matches the EXPOSE above.
+
+**What the container looks like from the inside after build:**
+```
+/app/
+├── requirements.txt
+├── src/
+│   ├── __init__.py
+│   ├── api/
+│   │   ├── __init__.py
+│   │   ├── main.py        ← FastAPI app
+│   │   └── schemas.py     ← input/output validation
+│   ├── data/
+│   ├── models/
+│   └── mlflow_setup.py
+└── models/
+    ├── xgboost_tuned.pkl  ← trained XGBoost model (baked in)
+    └── scaler.pkl         ← fitted RobustScaler (baked in)
+```
+
+Everything else (notebooks, data/, mlruns/, tests/, venv/) is excluded by `.dockerignore` — they are not in the image.
+
+---
+
+### Where the Model Lives and How It Gets Loaded
+
+The model is not downloaded at runtime. It is **inside the Docker image** at `/app/models/xgboost_tuned.pkl`. When Render starts the container, Python loads it once into memory.
+
+Here is what happens the moment the container starts:
+
+```
+Render runs: uvicorn src.api.main:app --host 0.0.0.0 --port 8000
+      │
+      ▼
+Python imports src/api/main.py
+      │
+      ▼
+These lines run at import time (top of main.py):
+
+  MODEL_PATH  = "models/xgboost_tuned.pkl"   → /app/models/xgboost_tuned.pkl
+  SCALER_PATH = "models/scaler.pkl"           → /app/models/scaler.pkl
+
+  model  = joblib.load(MODEL_PATH)   ← XGBoost model loaded into RAM (~2MB)
+  scaler = joblib.load(SCALER_PATH)  ← RobustScaler loaded into RAM (~1KB)
+      │
+      ▼
+FastAPI app is created and routes are registered
+      │
+      ▼
+Uvicorn starts listening on 0.0.0.0:8000
+      │
+      ▼
+Container is ready — Render health check hits /health → 200 OK
+      │
+      ▼
+Traffic is routed to this container
+```
+
+The model loads **once** — not on every request. After that, `model` and `scaler` sit in RAM for as long as the container is running. Each prediction just calls `model.predict_proba()` on the already-loaded object — that is why inference takes only 2–5ms.
+
+---
+
+### How GitHub, Docker Hub, and Render Are Connected
+
+These three services form a chain. Each one hands off to the next automatically.
+
+**GitHub** holds your source code and runs GitHub Actions.
+**Docker Hub** is an image registry — a place to store and distribute Docker images, like an app store for containers.
+**Render** is the cloud server that actually runs your container and serves traffic.
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  GITHUB                                                             │
+│                                                                     │
+│  Your code lives here (src/, Dockerfile, requirements.txt, etc.)   │
+│                                                                     │
+│  When you push → GitHub Actions reads ci-cd.yml and runs:          │
+│    1. Installs Python, downloads models, runs pytest                │
+│    2. Reads the Dockerfile and builds a Docker image                │
+│       The image contains:                                           │
+│         - Python 3.11                                               │
+│         - All pip packages from requirements.txt                    │
+│         - Your src/ code                                            │
+│         - xgboost_tuned.pkl and scaler.pkl baked in                 │
+│    3. Logs into Docker Hub using your DOCKERHUB_USERNAME secret     │
+│       and pushes the image there                                    │
+│    4. POSTs to the Render Deploy Hook URL                           │
+└────────────────────────────┬────────────────────────────────────────┘
+                             │ docker push
+                             ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  DOCKER HUB  (hub.docker.com)                                       │
+│                                                                     │
+│  Stores your image at:                                              │
+│    your-username/fraud-detection-api:latest                         │
+│    your-username/fraud-detection-api:abc1234  (commit SHA)          │
+│                                                                     │
+│  Think of it like GitHub but for Docker images instead of code.     │
+│  The image is public so Render can pull it without credentials.     │
+└────────────────────────────┬────────────────────────────────────────┘
+                             │ Render receives deploy hook POST
+                             │ Render pulls image: docker pull your-username/fraud-detection-api:latest
+                             ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  RENDER  (render.com)                                               │
+│                                                                     │
+│  Runs your container on their server:                               │
+│    uvicorn src.api.main:app --host 0.0.0.0 --port 8000             │
+│                                                                     │
+│  Wraps it with HTTPS automatically:                                 │
+│    http://container:8000  →  https://fraud-detection-api-...render.com  │
+│                                                                     │
+│  Exposes it to the public internet — anyone can reach it            │
+└────────────────────────────┬────────────────────────────────────────┘
+                             │ public URL
+                             ▼
+              https://fraud-detection-api-latest-f3iz.onrender.com
+```
+
+**What "baked in" means:** When GitHub Actions runs `docker build`, the Dockerfile COPYs the model files into the image. So the final image is self-contained — it has Python, packages, code, and the trained model all in one file. Render just runs that file. It doesn't need access to your laptop or your `models/` folder. Everything it needs is already inside the image.
+
+---
+
+### How a User Opens and Tests the API (Swagger UI)
+
+When someone opens your link in a browser, here is exactly what happens:
+
+```
+User opens: https://fraud-detection-api-latest-f3iz.onrender.com/docs
+                              │
+                              ▼
+             Browser sends:  GET /docs  HTTP request to Render
+                              │
+                              ▼
+             Render forwards request to your running container
+                              │
+                              ▼
+             FastAPI receives GET /docs
+             FastAPI automatically generates a web page from your code
+             (reads the schemas.py input/output definitions and builds the UI)
+                              │
+                              ▼
+             Browser receives HTML + JavaScript
+             Renders the Swagger UI page
+```
+
+The user sees this interactive page:
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  Fraud Detection API  1.0.0                                  │
+│  Predicts whether a credit card transaction is fraudulent    │
+│                                                              │
+│  Prediction                                                  │
+│  ─────────────────────────────────────────────────────────   │
+│  POST  /predict                          [ Try it out ]      │
+│                                                              │
+│  Info                                                        │
+│  ─────────────────────────────────────────────────────────   │
+│  GET   /health                           [ Try it out ]      │
+│  GET   /                                 [ Try it out ]      │
+└──────────────────────────────────────────────────────────────┘
+```
+
+**Step by step — how they test a prediction:**
+
+1. Click **POST /predict** to expand it
+2. Click **Try it out** button (top right of that section)
+3. The request body becomes editable — they see the full JSON with all 30 fields
+4. They change some values or paste a row from the dataset
+5. Click **Execute**
+6. Swagger sends the request to `/predict` and shows the response:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Request URL                                                │
+│  https://fraud-detection-api-latest-f3iz.onrender.com/predict│
+│                                                             │
+│  Response body                                              │
+│  {                                                          │
+│    "is_fraud": true,                                        │
+│    "fraud_probability": 1.0,                                │
+│    "inference_ms": 4.21                                     │
+│  }                                                          │
+│                                                             │
+│  Response code: 200                                         │
+└─────────────────────────────────────────────────────────────┘
+```
+
+No curl, no Python, no terminal. Just a browser. This is what makes Swagger UI the right link to put in your CV — a recruiter can test your model in 30 seconds without writing a single line of code.
+
+---
+
+### Full Flow — From git push to Live Prediction
+
+**Part 1: You push code — what happens in CI/CD**
+
+```
+You type:  git push origin master
+                │
+                ▼
+        ┌───────────────────────────────────────────────────┐
+        │  GITHUB                                           │
+        │  Receives the push                                │
+        │  Reads .github/workflows/ci-cd.yml               │
+        │  Spins up a fresh Ubuntu server on GitHub's cloud │
+        └───────────────────────┬───────────────────────────┘
+                                │
+                ┌───────────────▼────────────────┐
+                │  JOB 1 — test                  │
+                │                                │
+                │  • git checkout (download code) │
+                │  • Python 3.11 installed        │
+                │  • pip install requirements.txt │
+                │  • curl → GitHub Release v1.0.0 │
+                │      downloads xgboost_tuned.pkl│
+                │      downloads scaler.pkl       │
+                │  • pytest tests/test_api.py     │
+                │      14 tests run               │
+                │      all pass ✓                 │
+                └───────────────┬────────────────┘
+                                │ tests passed
+                ┌───────────────▼────────────────┐
+                │  JOB 2 — build-and-push         │
+                │                                │
+                │  Fresh Ubuntu server (no files) │
+                │  • git checkout                 │
+                │  • curl → download models again │
+                │  • docker build                 │
+                │      reads Dockerfile           │
+                │      FROM python:3.11-slim      │
+                │      pip install packages       │
+                │      COPY src/                  │
+                │      COPY models/*.pkl  ← baked │
+                │      image is now complete      │
+                │  • docker login Docker Hub      │
+                │      (uses GitHub Secrets)      │
+                │  • docker push :latest          │
+                │  • docker push :abc1234 (SHA)   │
+                └───────────────┬────────────────┘
+                                │ image on Docker Hub
+                ┌───────────────▼────────────────┐
+                │  JOB 3 — deploy                 │
+                │                                │
+                │  curl POST →                   │
+                │  api.render.com/deploy/srv-xxx  │
+                │  (the Render Deploy Hook)       │
+                └───────────────┬────────────────┘
+                                │
+                                ▼
+                        ┌───────────────────────┐
+                        │  RENDER               │
+                        │                       │
+                        │  Receives POST        │
+                        │  docker pull :latest  │
+                        │  Stop old container   │
+                        │  Start new container  │
+                        │  → uvicorn runs       │
+                        │  → model loads to RAM │
+                        │  GET /health → 200    │
+                        │  Deploy confirmed ✓   │
+                        └───────────────────────┘
+```
+
+**Part 2: A user makes a prediction — what happens inside the container**
+
+```
+User opens Swagger UI or sends curl:
+POST https://fraud-detection-api-latest-f3iz.onrender.com/predict
+Body: {"Time": 406, "Amount": 0.0, "V1": -2.31, ... "V28": 0.09}
+      │
+      ▼
+Render receives HTTPS request
+Render decrypts SSL (converts https → http internally)
+Render forwards to container on port 8000
+      │
+      ▼
+Uvicorn (inside container) receives HTTP request on port 8000
+Uvicorn routes it to the FastAPI /predict handler in src/api/main.py
+      │
+      ▼
+Pydantic validates the input (schemas.py)
+  • All 30 fields present? ✓
+  • All values are numbers? ✓
+  • Amount >= 0? ✓
+  • Passes → create TransactionInput object
+  • Fails → return HTTP 422 immediately, model never called
+      │
+      ▼
+Inside predict():
+  row = pd.DataFrame([transaction.model_dump()], columns=FEATURE_ORDER)
+  → arranges the 30 values in the exact column order the model was trained on
+  → ["Time", "V1", "V2", ..., "V28", "Amount"]
+      │
+      ▼
+  row[["Amount", "Time"]] = scaler.transform(row[["Amount", "Time"]])
+  → scaler is already in RAM (loaded at startup)
+  → transforms Amount and Time to the same scale used during training
+  → V1–V28 are left unchanged (already scaled by the bank)
+      │
+      ▼
+  fraud_proba = float(model.predict_proba(row)[0][1])
+  → model is already in RAM (loaded at startup)
+  → XGBoost runs 300 decision trees on the 30 feature values
+  → each tree votes: fraud or not
+  → outputs a probability: e.g. 0.9997 (very likely fraud)
+  → takes 2–5 milliseconds
+      │
+      ▼
+  is_fraud = fraud_proba >= 0.5   → True
+      │
+      ▼
+FastAPI returns JSON response:
+  {
+    "is_fraud": true,
+    "fraud_probability": 1.0,
+    "inference_ms": 4.21
+  }
+      │
+      ▼
+Uvicorn sends HTTP response to Render
+Render encrypts it back to HTTPS
+User's browser / curl receives the response
+```
+
+**Where the model is at each stage:**
+
+| Stage | Where is xgboost_tuned.pkl? |
+|-------|----------------------------|
+| Your laptop | `D:\BSDS\...\models\xgboost_tuned.pkl` |
+| GitHub Release | Attached as binary asset to release `v1.0.0` |
+| CI/CD Job 1 (test) | Downloaded by curl to `/home/runner/work/.../models/` on GitHub's server |
+| CI/CD Job 2 (build) | Downloaded by curl, then baked into the Docker image by `COPY models/xgboost_tuned.pkl` |
+| Docker Hub | Inside the image layer at `/app/models/xgboost_tuned.pkl` |
+| Render container | `/app/models/xgboost_tuned.pkl` — loaded into RAM at startup |
+| During prediction | In RAM as a Python XGBoost object — `model.predict_proba()` runs on it |
+
+The model file never touches the user's browser. It lives inside the Docker image on Render's server and is called entirely server-side.
+
+---
+
+### Full Deployment Picture (Everything Connected)
+
+```
+You push code
+      │
+      ▼
+GitHub Actions: test → build → push to Docker Hub → POST deploy hook
+      │
+      ▼
+Render: pulls image → starts container → model loads into RAM
+      │
+      ▼
+UptimeRobot: pings /health every 5 min → container never sleeps
+      │
+      ▼
+User opens /docs → fills in values → Execute
+      │
+      ▼
+Container: validates input → scales features → XGBoost predicts → returns JSON
+      │
+      ▼
+{"is_fraud": true, "fraud_probability": 1.0, "inference_ms": 4.2}
+```
 
 ---
 
