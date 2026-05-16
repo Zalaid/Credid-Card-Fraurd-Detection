@@ -1,0 +1,76 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+
+  # ─── 1. Run API tests ───────────────────────────────────────────────────────
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Download model files from GitHub Release
+        run: |
+          mkdir -p models
+          curl -fL -o models/xgboost_tuned.pkl \
+            https://github.com/${{ github.repository }}/releases/download/v1.0.0/xgboost_tuned.pkl
+          curl -fL -o models/scaler.pkl \
+            https://github.com/${{ github.repository }}/releases/download/v1.0.0/scaler.pkl
+
+      - name: Run API tests
+        run: pytest tests/test_api.py -v
+
+  # ─── 2. Build & push Docker image ──────────────────────────────────────────
+  build-and-push:
+    name: Build & Push
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download model files from GitHub Release
+        run: |
+          mkdir -p models
+          curl -fL -o models/xgboost_tuned.pkl \
+            https://github.com/${{ github.repository }}/releases/download/v1.0.0/xgboost_tuned.pkl
+          curl -fL -o models/scaler.pkl \
+            https://github.com/${{ github.repository }}/releases/download/v1.0.0/scaler.pkl
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/fraud-detection-api:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/fraud-detection-api:${{ github.sha }}
+
+  # ─── 3. Trigger Render redeploy ─────────────────────────────────────────────
+  deploy:
+    name: Deploy
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Render deploy
+        run: curl -fX POST "${{ secrets.RENDER_DEPLOY_HOOK }}"

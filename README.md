@@ -17,8 +17,8 @@ A machine learning project that trains and benchmarks 9 models on real credit ca
 | 7 | FastAPI inference service | Done |
 | 8 | Tests | Done |
 | 9 | Docker containerization | Done |
-| 10 | CI/CD with GitHub Actions | Pending |
-| 11 | Deploy on Render | Pending |
+| 10 | CI/CD with GitHub Actions | Done |
+| 11 | Deploy on Render | Done |
 | 12 | README & demo polish | Pending |
 
 ---
@@ -95,7 +95,7 @@ fraud-detection/
 │
 ├── .github/
 │   └── workflows/
-│       └── ci-cd.yml               # (Step 10 — pending)
+│       └── ci-cd.yml               # Step 10 — test → build → push → deploy on every git push
 │
 ├── Dockerfile                      # Step 9 — builds the API container image
 ├── docker-compose.yml              # Step 9 — runs API + MLflow UI together
@@ -765,6 +765,9 @@ Defines two services that start together with one command:
 
 ### How to Build and Run
 
+To test it: Start Docker Desktop, then run docker-compose up --build from the project folder. Docker Desktop isn't currently running so the build couldn't be
+  verified, but the files are correct. Ready for Step 10 (CI/CD) whenever you are.
+
 **Prerequisites:** Docker Desktop must be running ([download here](https://www.docker.com/products/docker-desktop/))
 
 ```bash
@@ -805,18 +808,182 @@ docker-compose down
 
 ---
 
-## CI/CD Pipeline (.github/workflows/)
+## Step 10 — CI/CD with GitHub Actions
 
-This folder is empty until **Step 10**. GitHub Actions scans `.github/workflows/` for `.yml` files on every push. Once `ci-cd.yml` is added, every `git push` to `main` automatically triggers:
+Every time you push code to GitHub, the pipeline automatically runs tests, builds a Docker image, pushes it to Docker Hub, and deploys the new version to Render — all without any manual steps.
+
+### `.github/workflows/ci-cd.yml`
+
+The pipeline has three jobs that run in order. If any job fails, the next one doesn't start.
 
 ```
-git push → GitHub Actions →
-  [1] Lint   — checks code style with flake8
-  [2] Test   — runs pytest, all tests must pass
-  [3] Build  — builds the Docker image
-  [4] Push   — pushes image to Docker Hub
-  [5] Deploy — triggers a redeploy on Render (live URL updates automatically)
+git push to main
+      │
+      ▼
+  ┌─────────┐
+  │  test   │  Install Python 3.11 + deps
+  │         │  Download model files from GitHub Release
+  │         │  Run pytest tests/test_api.py (14 tests)
+  └────┬────┘
+       │ all pass
+       ▼
+  ┌──────────────────┐
+  │  build-and-push  │  Download model files from GitHub Release
+  │                  │  docker build (using Dockerfile)
+  │                  │  docker push → Docker Hub :latest + :commit-sha
+  └────────┬─────────┘
+           │ image pushed
+           ▼
+      ┌──────────┐
+      │  deploy  │  POST to Render deploy hook URL
+      │          │  Render pulls new image → live URL updates
+      └──────────┘
 ```
+
+**Why download models from GitHub Release in CI?**
+The model files (`xgboost_tuned.pkl`, `scaler.pkl`) are in `.gitignore` so they don't get pushed to GitHub. Instead, they are uploaded once as assets on a GitHub Release (`v1.0.0`). Every CI run downloads them fresh before running tests and before building Docker.
+
+**Why only run `test_api.py` in CI and not all 28 tests?**
+`test_preprocessing.py` and `test_model.py` need the full processed dataset (~500 MB of `.pkl` files). Downloading all of that in CI on every push is wasteful. `test_api.py` (14 tests) covers the thing that actually gets deployed — the API. The training pipeline tests run locally.
+
+**Two Docker tags per push:**
+- `:latest` — always points to the newest version
+- `:abc1234` (git commit SHA) — lets you roll back to any exact version
+
+---
+
+### Step 10 Setup — What You Need to Do
+
+#### 1. Create the GitHub repository and push
+
+```bash
+# On GitHub: create a new public repo named "fraud-detection" (no README, no .gitignore)
+# Then in your project folder:
+git remote add origin https://github.com/YOUR-USERNAME/fraud-detection.git
+git push -u origin master
+```
+
+#### 2. Create a GitHub Release with the model files
+
+The CI pipeline downloads models from Release `v1.0.0`. Create it once:
+
+1. Go to your GitHub repo → **Releases** → **Create a new release**
+2. Tag: `v1.0.0` | Title: `v1.0.0 — initial model`
+3. Click **Attach binaries** and upload these two files from your local `models/` folder:
+   - `xgboost_tuned.pkl`
+   - `scaler.pkl`
+4. Click **Publish release**
+
+#### 3. Create a Docker Hub account and access token
+
+1. Sign up at [hub.docker.com](https://hub.docker.com) (free)
+2. Go to **Account Settings → Security → New Access Token**
+3. Name it `github-actions`, permission: Read & Write
+4. Copy the token (shown only once)
+
+#### 4. Add GitHub Secrets
+
+Go to your GitHub repo → **Settings → Secrets and variables → Actions → New repository secret**. Add three secrets:
+
+| Secret name | Value |
+|-------------|-------|
+| `DOCKERHUB_USERNAME` | Your Docker Hub username |
+| `DOCKERHUB_TOKEN` | The access token from step 3 |
+| `RENDER_DEPLOY_HOOK` | The URL from Step 11 below (add after setting up Render) |
+
+#### 5. Push any change to trigger the pipeline
+
+```bash
+git push origin master
+```
+
+Go to your repo → **Actions** tab to watch the pipeline run live. Each job shows a green tick when it passes.
+
+---
+
+## Step 11 — Deploy on Render
+
+Render is a free cloud platform. Once set up, every successful CI/CD run automatically redeploys the live API — no manual steps.
+
+### What the free tier gives you
+
+| Property | Value |
+|----------|-------|
+| RAM | 512 MB |
+| CPU | 0.1 vCPU |
+| Cost | Free |
+| HTTPS | Automatic (free SSL certificate) |
+| Cold start | ~30 seconds after 15 min of no traffic |
+| Custom domain | Supported |
+
+The cold start means the first request after a period of inactivity takes ~30 seconds. After that, responses are under 100ms. This is acceptable for a portfolio/demo project.
+
+### Step 11 Setup — What You Need to Do
+
+**Prerequisites:** Step 10 must be done first — Docker Hub must have your image pushed.
+
+#### 1. Create a Render account
+
+Sign up at [render.com](https://render.com) (free, no credit card needed).
+
+#### 2. Create a new Web Service
+
+1. Click **New → Web Service**
+2. Choose **"Deploy an existing image from a registry"**
+3. Image URL: `your-dockerhub-username/fraud-detection-api:latest`
+4. Click **Connect**
+
+#### 3. Configure the service
+
+| Setting | Value |
+|---------|-------|
+| Name | `fraud-detection-api` |
+| Region | Oregon (US West) — fastest free tier |
+| Instance Type | **Free** |
+| Port | `8000` |
+
+Click **Create Web Service**. Render will pull the Docker image and deploy it. This takes 2–3 minutes the first time.
+
+#### 4. Verify it's live
+
+Once deployed, Render gives you a URL like:
+```
+https://fraud-detection-api.onrender.com
+```
+
+Test it:
+```bash
+# Health check
+curl https://fraud-detection-api.onrender.com/health
+# → {"status": "ok", "model_loaded": true}
+
+# Fraud prediction
+curl -X POST https://fraud-detection-api.onrender.com/predict \
+  -H "Content-Type: application/json" \
+  -d '{
+    "Time": 406, "Amount": 0.0,
+    "V1": -2.3122, "V2": 1.9519, "V3": -1.6097, "V4": 3.9979,
+    "V5": -0.5222, "V6": -1.4265, "V7": -2.5374, "V8": 1.3914,
+    "V9": -2.7700, "V10": -2.7722, "V11": 3.2020, "V12": -2.8992,
+    "V13": -0.5950, "V14": -4.2895, "V15": 0.3898, "V16": -1.1407,
+    "V17": -2.8300, "V18": -0.0168, "V19": 0.4165, "V20": 0.3269,
+    "V21": 0.1474, "V22": -0.1703, "V23": 0.0359, "V24": -0.4118,
+    "V25": 0.0714, "V26": 0.0719, "V27": 0.2127, "V28": 0.0952
+  }'
+# → {"is_fraud": true, "fraud_probability": 1.0, "inference_ms": 4.2}
+
+# Interactive Swagger UI
+# Open in browser: https://fraud-detection-api.onrender.com/docs
+```
+
+#### 5. Get the Deploy Hook URL and add it to GitHub Secrets
+
+1. In Render → your service → **Settings** → scroll down to **Deploy Hook**
+2. Copy the URL (looks like `https://api.render.com/deploy/srv-xxxxx?key=xxxxx`)
+3. Go back to GitHub → **Settings → Secrets → Actions**
+4. Add secret: `RENDER_DEPLOY_HOOK` = the URL you copied
+
+From now on, every `git push` to `main` triggers the full pipeline: tests → Docker build → Docker push → Render redeploy → live URL updated.
 
 ---
 
