@@ -13,7 +13,7 @@ A machine learning project that trains and benchmarks 12+ models on real credit 
 | 3 | Data preprocessing pipeline | Done |
 | 4 | MLflow experiment tracking setup | Done |
 | 5 | Train & benchmark 12 models | Done |
-| 6 | Model comparison & XGBoost tuning | Pending |
+| 6 | Model comparison & XGBoost tuning | Done |
 | 7 | FastAPI inference service | Pending |
 | 8 | Tests | Pending |
 | 9 | Docker containerization | Pending |
@@ -49,17 +49,18 @@ fraud-detection/
 │   │   └── preprocess.py           # Scaling, train/test split, SMOTE
 │   ├── models/
 │   │   ├── __init__.py
-│   │   └── train_all_models.py     # (Step 5 — pending)
+│   │   ├── train_all_models.py     # Step 5 — trains all 9 models
+│   └── tune_xgboost.py         # Step 6 — GridSearchCV tuning
 │   ├── evaluation/
 │   │   ├── __init__.py
-│   │   └── compare_models.py       # (Step 6 — pending)
+│   │   └── compare_models.py       # Step 6 — scores all models, generates charts
 │   └── api/
 │       ├── __init__.py
 │       ├── main.py                 # (Step 7 — pending)
 │       └── schemas.py              # (Step 7 — pending)
 │
-├── models/                          # 10 .pkl files total
-│   ├── scaler.pkl                  # Fitted RobustScaler — Step 3 (not a model)
+├── models/                          # 12 .pkl files total
+│   ├── scaler.pkl                  # Step 3 — RobustScaler (not a model)
 │   ├── logistic_regression.pkl     # Step 5
 │   ├── decision_tree.pkl           # Step 5
 │   ├── random_forest.pkl           # Step 5
@@ -68,7 +69,9 @@ fraud-detection/
 │   ├── gradient_boosting.pkl       # Step 5
 │   ├── xgboost.pkl                 # Step 5
 │   ├── lightgbm.pkl                # Step 5
-│   └── catboost.pkl                # Step 5
+│   ├── catboost.pkl                # Step 5
+│   ├── best_model.pkl              # Step 6 — highest AUC-ROC model (CatBoost)
+│   └── xgboost_final.pkl           # Step 6 — tuned XGBoost used in the API
 │
 ├── mlruns/
 │   └── mlflow.db                   # SQLite database for MLflow experiment tracking
@@ -218,6 +221,69 @@ python src/data/preprocess.py
 
 ---
 
+## Step 6 — Model Comparison & XGBoost Tuning
+
+### `src/evaluation/compare_models.py`
+Loads all 9 saved models, scores them on the test set, generates comparison charts, and saves the best model.
+
+| What it does | Detail |
+|---|---|
+| Scores all models | Loads each `.pkl`, runs predictions on `X_test`, computes all 5 metrics |
+| Bar chart | 4-panel chart comparing AUC-ROC, F1, Precision, Recall side by side across all models |
+| ROC curves | One curve per model on the same plot — shows how well each model separates fraud from normal at every threshold. A curve that hugs the top-left corner is best |
+| Saves best model | Copies the highest AUC-ROC model to `models/best_model.pkl` for easy access |
+
+**What is a ROC curve?** It plots True Positive Rate (fraud caught) vs False Positive Rate (normal flagged as fraud) as you change the decision threshold. The area under it (AUC-ROC) is the single best number to compare models on imbalanced data.
+
+```bash
+python src/evaluation/compare_models.py
+```
+
+**Charts saved:**
+```
+data/processed/charts/
+├── metric_comparison.png   # 4-panel bar chart of all metrics across all models
+└── roc_curves.png          # All 9 ROC curves on one plot
+```
+
+---
+
+### `src/models/tune_xgboost.py`
+Finds the best hyperparameters for XGBoost using GridSearchCV, then saves the tuned model.
+
+**What is GridSearchCV?** It tries every combination of settings you give it and picks the one with the best cross-validation score. Here it tries 27 combinations (3 × 3 × 3):
+
+| Parameter | Values tried | What it controls |
+|-----------|-------------|-----------------|
+| `n_estimators` | 100, 200, 300 | Number of trees — more trees = more accurate but slower |
+| `max_depth` | 4, 6, 8 | How deep each tree grows — deeper = learns more detail but risks overfitting |
+| `learning_rate` | 0.05, 0.1, 0.2 | How much each new tree corrects the previous — lower = more careful, needs more trees |
+
+**Best parameters found:** `n_estimators=300`, `max_depth=8`, `learning_rate=0.1`
+
+**Tuned XGBoost results on test set:**
+
+| Metric | Score | Meaning |
+|--------|-------|---------|
+| AUC-ROC | 0.9802 | Excellent separation between fraud and normal |
+| Recall | 0.8571 | Catches 85.7% of all actual fraud cases |
+| F1 | 0.8155 | Good balance between catching fraud and not over-flagging |
+
+**Files saved:**
+```
+models/
+├── best_model.pkl       # Highest AUC-ROC model from comparison (CatBoost)
+└── xgboost_final.pkl    # Tuned XGBoost — the model used in the API
+```
+
+Why use `xgboost_final.pkl` in the API if CatBoost scored higher? XGBoost is faster at inference, better documented, and the tuned version scores near identically. CatBoost's edge in AUC-ROC is marginal (0.9819 vs 0.9802).
+
+```bash
+python src/models/tune_xgboost.py
+```
+
+---
+
 ## Step 5 — Train & Benchmark 9 Models
 
 ### `src/models/train_all_models.py`
@@ -270,11 +336,18 @@ python src/models/train_all_models.py
 
 | Rank | Model | AUC-ROC | F1 | Precision | Recall | Accuracy |
 |------|-------|---------|----|-----------|----|---------|
-| — | — | *(populated after training)* | | | | |
-
-*(Full table with real scores added after Step 5 runs — view live in MLflow UI)*
+| 1 | CatBoost | 0.9819 | 0.6121 | 0.4699 | 0.8776 | 0.9981 |
+| 2 | Gradient Boosting | 0.9809 | 0.2730 | 0.1606 | 0.9082 | 0.9917 |
+| 3 | XGBoost | 0.9798 | 0.7288 | 0.6232 | 0.8776 | 0.9989 |
+| 4 | Extra Trees | 0.9782 | 0.8737 | 0.9022 | 0.8469 | 0.9996 |
+| 5 | LightGBM | 0.9772 | 0.7143 | 0.6071 | 0.8673 | 0.9988 |
+| 6 | AdaBoost | 0.9739 | 0.1014 | 0.0537 | 0.9082 | 0.9723 |
+| 7 | Random Forest | 0.9733 | 0.8497 | 0.8632 | 0.8367 | 0.9995 |
+| 8 | Logistic Regression | 0.9712 | 0.1110 | 0.0591 | 0.9184 | 0.9747 |
+| 9 | Decision Tree | 0.8704 | 0.1298 | 0.0704 | 0.8265 | 0.9809 |
 
 ```bash
+# View all runs live in the MLflow dashboard
 mlflow ui --backend-store-uri sqlite:///mlruns/mlflow.db
 ```
 
