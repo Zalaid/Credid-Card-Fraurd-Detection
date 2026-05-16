@@ -8,7 +8,7 @@ A machine learning project that trains and benchmarks 12+ models on real credit 
 |------|-------------|--------|
 | 1 | Project setup & environment | Done |
 | 2 | Dataset download & EDA | Done |
-| 3 | Data preprocessing pipeline | Pending |
+| 3 | Data preprocessing pipeline | Done |
 | 4 | MLflow experiment tracking setup | Pending |
 | 5 | Train & benchmark 12 models | Pending |
 | 6 | Model comparison & XGBoost tuning | Pending |
@@ -62,6 +62,30 @@ source venv/bin/activate     # macOS/Linux
 
 # Install dependencies
 pip install -r requirements.txt
+```
+
+## Data Preprocessing Pipeline (Step 3)
+
+`src/data/preprocess.py` prepares the data identically for all 12 models.
+
+| Stage | Detail |
+|-------|--------|
+| Load | Reads `data/raw/creditcard.csv` (284,807 rows) |
+| Scale | `RobustScaler` on `Amount` and `Time` only — V1–V28 are already PCA-scaled. RobustScaler is used because it ignores outliers (large transaction amounts won't skew the scaling) |
+| Split | 80/20 train/test split, stratified — preserves the 0.17% fraud ratio in both sets |
+| SMOTE | Applied to training data only — synthetic fraud examples added until classes are balanced (394 fraud → 227,451 fraud). Test data is never touched |
+| Save | All splits saved to `data/processed/` as `.pkl` files; scaler saved to `models/scaler.pkl` |
+
+**Output after running:**
+```
+Train : 227,845 rows  (fraud: 394)
+Test  :  56,962 rows  (fraud: 98)
+After SMOTE — normal: 227,451  fraud: 227,451
+```
+
+To run:
+```bash
+python src/data/preprocess.py
 ```
 
 ## EDA Notebook (Step 2)
