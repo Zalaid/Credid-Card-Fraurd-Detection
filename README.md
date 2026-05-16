@@ -1,6 +1,8 @@
 # Fraud Detection MLOps Pipeline
 
-A machine learning project that trains and benchmarks 12+ models on real credit card fraud data, selects the best model, and serves real-time predictions via a REST API.
+A machine learning project that trains and benchmarks 12+ models on real credit card fraud data, selects the best model (XGBoost), and serves real-time predictions via a FastAPI REST API — packaged in Docker with full CI/CD.
+
+---
 
 ## Project Status
 
@@ -19,34 +21,80 @@ A machine learning project that trains and benchmarks 12+ models on real credit 
 | 11 | Deploy on Render | Pending |
 | 12 | README & demo polish | Pending |
 
+---
+
 ## Project Structure
 
 ```
 fraud-detection/
-├── data/                    # Raw and processed data
-├── notebooks/               # EDA and experimentation
+├── data/
+│   ├── raw/
+│   │   └── creditcard.csv          # Original Kaggle dataset (284,807 rows)
+│   └── processed/
+│       ├── X_train_raw.pkl         # Training features before SMOTE
+│       ├── y_train_raw.pkl         # Training labels  before SMOTE
+│       ├── X_train_smote.pkl       # Training features after SMOTE (balanced)
+│       ├── y_train_smote.pkl       # Training labels  after SMOTE (balanced)
+│       ├── X_test.pkl              # Test features (never touched by SMOTE)
+│       └── y_test.pkl              # Test labels
+│
+├── notebooks/
+│   └── 01_eda.ipynb                # Exploratory data analysis
+│
 ├── src/
-│   ├── data/                # Data loading and preprocessing
-│   ├── models/              # Model training scripts
-│   ├── evaluation/          # Metrics and comparison
-│   └── api/                 # FastAPI application
-├── mlruns/                  # MLflow experiment logs
-├── models/                  # Saved trained models
-├── tests/                   # Unit and integration tests
-├── .github/workflows/       # CI/CD pipeline (populated in Step 10)
+│   ├── __init__.py
+│   ├── mlflow_setup.py             # MLflow init + log_model_run() helper
+│   ├── data/
+│   │   ├── __init__.py
+│   │   └── preprocess.py           # Scaling, train/test split, SMOTE
+│   ├── models/
+│   │   ├── __init__.py
+│   │   └── train_all_models.py     # (Step 5 — pending)
+│   ├── evaluation/
+│   │   ├── __init__.py
+│   │   └── compare_models.py       # (Step 6 — pending)
+│   └── api/
+│       ├── __init__.py
+│       ├── main.py                 # (Step 7 — pending)
+│       └── schemas.py              # (Step 7 — pending)
+│
+├── models/
+│   └── scaler.pkl                  # Fitted RobustScaler (reused by API at inference)
+│
+├── mlruns/
+│   └── mlflow.db                   # SQLite database for MLflow experiment tracking
+│
+├── tests/
+│   ├── __init__.py
+│   ├── test_preprocessing.py       # (Step 8 — pending)
+│   ├── test_model.py               # (Step 8 — pending)
+│   └── test_api.py                 # (Step 8 — pending)
+│
+├── .github/
+│   └── workflows/
+│       └── ci-cd.yml               # (Step 10 — pending)
+│
+├── Dockerfile                      # (Step 9 — pending)
+├── docker-compose.yml              # (Step 9 — pending)
 ├── requirements.txt
 └── README.md
 ```
 
+---
+
 ## Tech Stack
 
-- **ML:** scikit-learn, XGBoost, LightGBM, CatBoost
-- **Imbalance handling:** SMOTE (imbalanced-learn)
-- **Experiment tracking:** MLflow
-- **API:** FastAPI + Uvicorn
-- **Containerization:** Docker
-- **CI/CD:** GitHub Actions
-- **Deployment:** Render (free tier)
+| Layer | Tools |
+|-------|-------|
+| ML models | scikit-learn, XGBoost, LightGBM, CatBoost |
+| Imbalance handling | SMOTE (imbalanced-learn) |
+| Experiment tracking | MLflow (SQLite backend) |
+| API | FastAPI + Uvicorn |
+| Containerization | Docker |
+| CI/CD | GitHub Actions |
+| Deployment | Render (free tier) |
+
+---
 
 ## Setup
 
@@ -60,113 +108,138 @@ python -m venv venv
 venv\Scripts\activate        # Windows
 source venv/bin/activate     # macOS/Linux
 
-# Install dependencies
+# Install all dependencies
 pip install -r requirements.txt
 ```
 
-## MLflow Experiment Tracking (Step 4)
+---
 
-`src/mlflow_setup.py` configures MLflow before any model is trained.
+## Step 1 — Project Setup & Environment
 
-| What | Detail |
-|------|--------|
-| Backend | SQLite — stored at `mlruns/mlflow.db` (recommended over file-based tracking) |
-| Experiment | `fraud-detection-benchmark` — all 12 model runs are grouped here |
-| `init_mlflow()` | Sets tracking URI and creates the experiment. Called once at the top of the training script |
-| `log_model_run()` | Helper used by every model — logs params, metrics, and the saved model artifact in one call |
+**Files created:** `requirements.txt`, `.gitignore`, `README.md`, full folder structure, `src/` and `tests/` package init files.
 
-**What gets logged per model run:**
-- Hyperparameters (e.g. `n_estimators`, `max_depth`, `learning_rate`)
-- Metrics: `auc_roc`, `f1`, `precision`, `recall`, `accuracy`
-- The fitted model artifact (loadable directly from MLflow)
-- Model signature (input/output schema)
+**Dependencies in `requirements.txt`:**
 
-**To open the MLflow dashboard:**
+| Group | Packages |
+|-------|---------|
+| Core data science | pandas, numpy, scikit-learn, scipy, matplotlib, seaborn |
+| Gradient boosting | xgboost, lightgbm, catboost |
+| Imbalance | imbalanced-learn (SMOTE) |
+| Experiment tracking | mlflow |
+| Web API | fastapi, uvicorn, pydantic |
+| Testing | pytest, pytest-cov, httpx |
+| Notebooks | jupyter, nbconvert |
+| Utilities | joblib, python-dotenv |
+
+**Python version:** 3.13.5 — all packages pinned with `>=` so pip resolves pre-built wheels automatically.
+
+---
+
+## Step 2 — EDA Notebook
+
+**File:** `notebooks/01_eda.ipynb`
+
+| Section | What it shows |
+|---------|--------------|
+| Data overview | Shape (284,807 × 31), dtypes, memory usage |
+| Missing values | Zero missing values — dataset is clean |
+| Class imbalance | 99.83% normal, 0.17% fraud — 578:1 ratio (pie chart + bar chart) |
+| Amount analysis | Fraud transactions tend to be smaller; histogram + box plot by class |
+| Time analysis | Normal transactions dip at night; fraud is spread evenly throughout the day |
+| V1–V28 distributions | Side-by-side histograms — V4, V11, V12, V14, V17 show strongest class separation |
+| Correlation heatmap | Full 31×31 feature correlation matrix |
+| Fraud correlations | Ranked bar chart of features most correlated with fraud |
+| Key findings | Summary + why SMOTE and AUC-ROC are the right choices for this dataset |
+
 ```bash
-mlflow ui --backend-store-uri sqlite:///mlruns/mlflow.db
-# then open http://localhost:5000
+# Run interactively
+jupyter notebook notebooks/01_eda.ipynb
+
+# Run headlessly from terminal (executes all cells and saves output)
+jupyter nbconvert --to notebook --execute notebooks/01_eda.ipynb --output 01_eda.ipynb --output-dir notebooks/
 ```
 
-## Data Preprocessing Pipeline (Step 3)
+---
 
-`src/data/preprocess.py` prepares the data identically for all 12 models.
+## Step 3 — Data Preprocessing Pipeline
+
+**File:** `src/data/preprocess.py`
 
 | Stage | Detail |
 |-------|--------|
-| Load | Reads `data/raw/creditcard.csv` (284,807 rows) |
-| Scale | `RobustScaler` on `Amount` and `Time` only — V1–V28 are already PCA-scaled. RobustScaler is used because it ignores outliers (large transaction amounts won't skew the scaling) |
-| Split | 80/20 train/test split, stratified — preserves the 0.17% fraud ratio in both sets |
-| SMOTE | Applied to training data only — synthetic fraud examples added until classes are balanced (394 fraud → 227,451 fraud). Test data is never touched |
-| Save | Splits saved to `data/processed/`, scaler saved to `models/scaler.pkl` (see files below) |
+| Load | Reads `data/raw/creditcard.csv` |
+| Scale | `RobustScaler` on `Amount` and `Time` only — V1–V28 are already PCA-scaled. RobustScaler ignores outliers so large amounts don't skew the scaling |
+| Split | 80/20 stratified split — preserves 0.17% fraud ratio in both train and test sets |
+| SMOTE | Applied to training data only — fraud examples grow from 394 → 227,451 (balanced). Test data is never touched |
+| Save | All splits written to `data/processed/`; fitted scaler written to `models/scaler.pkl` |
 
-**Files generated after running:**
-
+**Generated files:**
 ```
 data/processed/
-├── X_train_raw.pkl      # Training features (before SMOTE) — 227,845 rows
-├── y_train_raw.pkl      # Training labels  (before SMOTE) — 394 fraud cases
-├── X_train_smote.pkl    # Training features (after SMOTE)  — 454,902 rows (balanced)
-├── y_train_smote.pkl    # Training labels  (after SMOTE)   — 227,451 fraud cases
-├── X_test.pkl           # Test features (never touched by SMOTE) — 56,962 rows
-└── y_test.pkl           # Test labels                           — 98 fraud cases
+├── X_train_raw.pkl      # 227,845 rows — original imbalanced training features
+├── y_train_raw.pkl      # 394 fraud cases out of 227,845
+├── X_train_smote.pkl    # 454,902 rows — SMOTE-balanced training features
+├── y_train_smote.pkl    # 227,451 fraud cases (perfectly balanced)
+├── X_test.pkl           # 56,962 rows — test features (untouched)
+└── y_test.pkl           # 98 fraud cases out of 56,962
 
 models/
-└── scaler.pkl           # Fitted RobustScaler — reused by the API at inference time
+└── scaler.pkl           # Fitted RobustScaler — loaded by the API at inference time
 ```
 
-**Console output:**
-```
-Train : 227,845 rows  (fraud: 394)
-Test  :  56,962 rows  (fraud: 98)
-After SMOTE — normal: 227,451  fraud: 227,451
-```
-
-To run:
 ```bash
 python src/data/preprocess.py
 ```
 
-## EDA Notebook (Step 2)
+---
 
-`notebooks/01_eda.ipynb` covers the full exploratory analysis of the dataset:
+## Step 4 — MLflow Experiment Tracking
 
-| Section | What it shows |
-|---------|--------------|
-| Data overview | Shape, dtypes, memory usage |
-| Missing values | Confirmed zero missing values — no imputation needed |
-| Class imbalance | Pie chart + bar chart — 99.83% normal, 0.17% fraud (578:1 ratio) |
-| Amount analysis | Fraud transactions tend to be smaller; histogram + box plot by class |
-| Time analysis | Normal transactions dip at night; fraud is spread throughout the day |
-| V1–V28 distributions | Side-by-side histograms — V4, V11, V12, V14, V17 show strongest separation |
-| Correlation heatmap | Full 31×31 feature correlation matrix |
-| Fraud correlations | Ranked bar chart of which features correlate most with fraud |
-| Key findings | Summary table + why SMOTE and AUC-ROC are necessary |
+**File:** `src/mlflow_setup.py`
 
-To run the notebook yourself:
+| What | Detail |
+|------|--------|
+| Backend | SQLite — `mlruns/mlflow.db` (recommended over deprecated file-based tracking) |
+| Experiment | `fraud-detection-benchmark` — all 12 model runs grouped here |
+| `init_mlflow()` | Sets tracking URI, creates the experiment. Called once before any training |
+| `log_model_run()` | Reusable helper — logs params, metrics, and fitted model artifact in one call |
+
+**Logged per model run:**
+- Hyperparameters (`n_estimators`, `max_depth`, `learning_rate`, etc.)
+- Metrics: `auc_roc`, `f1`, `precision`, `recall`, `accuracy`
+- Fitted model artifact (reloadable directly from MLflow)
+- Model signature (input/output schema for the API)
+
 ```bash
-# Option 1 — open interactively
-jupyter notebook notebooks/01_eda.ipynb
-
-# Option 2 — execute headlessly from terminal (re-runs all cells and saves output)
-jupyter nbconvert --to notebook --execute notebooks/01_eda.ipynb --output 01_eda.ipynb --output-dir notebooks/
+# Open MLflow dashboard after Step 5 trains the models
+mlflow ui --backend-store-uri sqlite:///mlruns/mlflow.db
+# then open http://localhost:5000
 ```
+
+---
 
 ## CI/CD Pipeline (.github/workflows/)
 
-This folder is intentionally empty until **Step 10**. GitHub Actions automatically scans `.github/workflows/` for `.yml` files every time you push code to GitHub. Once `ci-cd.yml` is added there, every push to `main` will trigger this automated sequence:
+This folder is intentionally empty until **Step 10**. GitHub Actions automatically scans `.github/workflows/` for `.yml` files on every push. Once `ci-cd.yml` is added, every `git push` to `main` triggers:
 
 ```
-git push → GitHub detects .github/workflows/ci-cd.yml →
-  [1] Lint   — checks code style (flake8)
-  [2] Test   — runs pytest, all tests must pass
-  [3] Build  — builds the Docker image
-  [4] Push   — uploads image to Docker Hub
-  [5] Deploy — triggers a redeploy on Render (live URL updates automatically)
+git push → GitHub Actions →
+  [1] Lint   — flake8 code style check
+  [2] Test   — pytest (all tests must pass)
+  [3] Build  — docker build
+  [4] Push   — push image to Docker Hub
+  [5] Deploy — trigger redeploy on Render
 ```
 
-Nothing runs until the file exists there — that is why the folder is empty right now.
+---
 
 ## Dataset
 
-Credit Card Fraud Detection — 284,807 transactions, 492 fraudulent (0.17% fraud rate).  
-Source: [Kaggle](https://www.kaggle.com/datasets/mlg-ulb/creditcardfraud)
+**Credit Card Fraud Detection** — [Kaggle](https://www.kaggle.com/datasets/mlg-ulb/creditcardfraud)
+
+| Property | Value |
+|----------|-------|
+| Total transactions | 284,807 |
+| Fraud cases | 492 (0.17%) |
+| Features | 30 (V1–V28 are PCA-transformed, plus Amount and Time) |
+| Target | `Class` — 0 = normal, 1 = fraud |
