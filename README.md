@@ -64,6 +64,31 @@ source venv/bin/activate     # macOS/Linux
 pip install -r requirements.txt
 ```
 
+## EDA Notebook (Step 2)
+
+`notebooks/01_eda.ipynb` covers the full exploratory analysis of the dataset:
+
+| Section | What it shows |
+|---------|--------------|
+| Data overview | Shape, dtypes, memory usage |
+| Missing values | Confirmed zero missing values — no imputation needed |
+| Class imbalance | Pie chart + bar chart — 99.83% normal, 0.17% fraud (578:1 ratio) |
+| Amount analysis | Fraud transactions tend to be smaller; histogram + box plot by class |
+| Time analysis | Normal transactions dip at night; fraud is spread throughout the day |
+| V1–V28 distributions | Side-by-side histograms — V4, V11, V12, V14, V17 show strongest separation |
+| Correlation heatmap | Full 31×31 feature correlation matrix |
+| Fraud correlations | Ranked bar chart of which features correlate most with fraud |
+| Key findings | Summary table + why SMOTE and AUC-ROC are necessary |
+
+To run the notebook yourself:
+```bash
+# Option 1 — open interactively
+jupyter notebook notebooks/01_eda.ipynb
+
+# Option 2 — execute headlessly from terminal (re-runs all cells and saves output)
+jupyter nbconvert --to notebook --execute notebooks/01_eda.ipynb --output 01_eda.ipynb --output-dir notebooks/
+```
+
 ## CI/CD Pipeline (.github/workflows/)
 
 This folder is intentionally empty until **Step 10**. GitHub Actions automatically scans `.github/workflows/` for `.yml` files every time you push code to GitHub. Once `ci-cd.yml` is added there, every push to `main` will trigger this automated sequence:
