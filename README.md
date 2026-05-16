@@ -14,7 +14,7 @@ A machine learning project that trains and benchmarks 9 models on real credit ca
 | 4 | MLflow experiment tracking setup | Done |
 | 5 | Train & benchmark 9 models | Done |
 | 6 | Model comparison & XGBoost tuning | Done |
-| 7 | FastAPI inference service | Pending |
+| 7 | FastAPI inference service | Done |
 | 8 | Tests | Pending |
 | 9 | Docker containerization | Pending |
 | 10 | CI/CD with GitHub Actions | Pending |
@@ -61,8 +61,8 @@ fraud-detection/
 │   │   └── compare_models.py       # Scores all models, generates charts
 │   └── api/
 │       ├── __init__.py
-│       ├── main.py                 # (Step 7 — pending)
-│       └── schemas.py              # (Step 7 — pending)
+│       ├── main.py                 # Step 7 — FastAPI app, /predict /health /
+│       └── schemas.py              # Step 7 — input/output data shapes
 │
 ├── models/
 │   ├── scaler.pkl                  # Step 3 — RobustScaler (not a model)
@@ -448,6 +448,105 @@ mlruns/1/models/         two new run folders added by MLflow (one per tuned mode
 ```bash
 python src/models/tune_xgboost.py    # produces xgboost_tuned.pkl  ← final
 python src/models/tune_catboost.py   # produces catboost_final.pkl  (comparison)
+```
+
+---
+
+## Step 7 — FastAPI Inference Service
+
+### `src/api/schemas.py`
+Defines the exact shape of what the API accepts and returns using Pydantic. If the input is missing a field or has the wrong type, FastAPI automatically rejects it with a clear error before it even reaches the model.
+
+| Schema | Fields | Purpose |
+|--------|--------|---------|
+| `TransactionInput` | Time, V1–V28, Amount (30 fields total) | What the caller must send |
+| `PredictionOutput` | is_fraud, fraud_probability, inference_ms | What the API sends back |
+
+---
+
+### `src/api/main.py`
+The FastAPI application. Three endpoints:
+
+| Endpoint | Method | What it does |
+|----------|--------|-------------|
+| `/` | GET | Returns API name, version, model name, and list of endpoints |
+| `/health` | GET | Returns `{"status": "ok"}` — used by Docker to check if the container is alive |
+| `/predict` | POST | Accepts transaction features, returns fraud prediction |
+
+**How the model is loaded:**
+The model and scaler are loaded **once when the server starts**, not on every request. Loading takes ~200ms. Once loaded, each prediction only takes 2–5ms. This is what keeps response time under 100ms.
+
+**What happens inside `/predict`:**
+1. Receives the 30 feature values as JSON
+2. Arranges them in the exact column order the model was trained on
+3. Scales `Amount` and `Time` using the saved `scaler.pkl` (same transformation as training)
+4. Runs `model.predict_proba()` to get the fraud probability
+5. Returns result + how many milliseconds it took
+
+---
+
+### Understanding V1–V28 — How Inference Actually Works
+
+**You never type V1–V28 yourself.** Here is what they are and how inference works in the real world vs testing:
+
+**In real life (bank deployment):**
+```
+Customer swipes card
+      ↓
+Bank's internal system collects: card number, merchant, location,
+device fingerprint, time, amount, purchase history...
+      ↓
+Bank runs PCA on all that data internally to protect privacy
+      ↓
+Produces: V1=-2.31, V2=1.95, V3=-1.61 ... V28=0.09, Amount=0.00, Time=406
+      ↓
+Sends these 30 numbers to our API → gets back {"is_fraud": true}
+```
+
+V1–V28 are not random — they are mathematically derived from real transaction data. They carry real fraud signal, just in a form that doesn't expose private card information.
+
+**For testing (using rows from the dataset):**
+Take any row from `creditcard.csv`, remove the `Class` column, and send the rest to the API. Two real examples tested and confirmed working:
+
+```bash
+# Fraud transaction (Class=1 in dataset) — API correctly returns is_fraud: true
+curl -X POST http://localhost:8000/predict \
+  -H "Content-Type: application/json" \
+  -d '{
+    "Time": 406, "Amount": 0.0,
+    "V1": -2.3122, "V2": 1.9519, "V3": -1.6097, "V4": 3.9979,
+    "V5": -0.5222, "V6": -1.4265, "V7": -2.5374, "V8": 1.3914,
+    "V9": -2.7700, "V10": -2.7722, "V11": 3.2020, "V12": -2.8992,
+    "V13": -0.5950, "V14": -4.2895, "V15": 0.3898, "V16": -1.1407,
+    "V17": -2.8300, "V18": -0.0168, "V19": 0.4165, "V20": 0.3269,
+    "V21": 0.1474, "V22": -0.1703, "V23": 0.0359, "V24": -0.4118,
+    "V25": 0.0714, "V26": 0.0719, "V27": 0.2127, "V28": 0.0952
+  }'
+# → {"is_fraud": true, "fraud_probability": 1.0, "inference_ms": 5.01}
+
+# Normal transaction (Class=0 in dataset) — API correctly returns is_fraud: false
+curl -X POST http://localhost:8000/predict \
+  -H "Content-Type: application/json" \
+  -d '{
+    "Time": 0, "Amount": 149.62,
+    "V1": -1.3598, "V2": -0.0728, "V3": 2.5363, "V4": 1.3782,
+    "V5": -0.3383, "V6": 0.4624, "V7": 0.2396, "V8": 0.0987,
+    "V9": 0.3638, "V10": 0.0908, "V11": -0.5516, "V12": -0.6178,
+    "V13": -0.9914, "V14": -0.3112, "V15": 1.4681, "V16": -0.4704,
+    "V17": 0.2080, "V18": 0.0258, "V19": 0.4040, "V20": 0.2514,
+    "V21": -0.0183, "V22": 0.2778, "V23": -0.1105, "V24": 0.0669,
+    "V25": 0.1285, "V26": -0.1892, "V27": 0.1336, "V28": -0.0211
+  }'
+# → {"is_fraud": false, "fraud_probability": 0.0, "inference_ms": 2.2}
+```
+
+**Interactive docs (Swagger UI):**
+When the API is running, open `http://localhost:8000/docs` in your browser. It shows every endpoint, lets you fill in the fields, and test with one click — no curl needed.
+
+**To start the API:**
+```bash
+uvicorn src.api.main:app --reload
+# then open http://localhost:8000
 ```
 
 ---
