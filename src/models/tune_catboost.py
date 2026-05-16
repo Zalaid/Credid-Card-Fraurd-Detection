@@ -3,7 +3,7 @@ import sys
 import joblib
 from sklearn.model_selection import GridSearchCV
 from sklearn.metrics import roc_auc_score, f1_score, precision_score, recall_score, accuracy_score
-from xgboost import XGBClassifier
+from catboost import CatBoostClassifier
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 from src.mlflow_setup import init_mlflow, log_model_run
@@ -12,8 +12,8 @@ PROCESSED_DIR = os.path.join('data', 'processed')
 MODELS_DIR    = os.path.join('models')
 
 PARAM_GRID = {
-    'n_estimators' : [100, 200, 300],
-    'max_depth'    : [4, 6, 8],
+    'iterations'   : [200, 300, 500],
+    'depth'        : [4, 6, 8],
     'learning_rate': [0.05, 0.1, 0.2],
 }
 
@@ -28,16 +28,12 @@ def load_data():
 
 def tune():
     print("=" * 55)
-    print("  XGBoost Hyperparameter Tuning (GridSearchCV)")
+    print("  CatBoost Hyperparameter Tuning (GridSearchCV)")
     print("=" * 55)
 
     X_train, y_train, X_test, y_test = load_data()
 
-    base = XGBClassifier(
-        eval_metric='logloss',
-        random_state=42,
-        n_jobs=-1,
-    )
+    base = CatBoostClassifier(random_seed=42, verbose=0)
 
     print(f"\n  Grid size : {3*3*3} combinations  (3 x 3 x 3)")
     print("  Searching — this may take a few minutes ...\n")
@@ -58,7 +54,6 @@ def tune():
     print(f"\n  Best params : {best_params}")
     print(f"  CV AUC-ROC  : {grid.best_score_:.4f}")
 
-    # evaluate on held-out test set
     y_pred  = best_model.predict(X_test)
     y_proba = best_model.predict_proba(X_test)[:, 1]
     metrics = {
@@ -72,20 +67,19 @@ def tune():
     print(f"\n  Test AUC-ROC : {metrics['auc_roc']}")
     print(f"  Test Recall  : {metrics['recall']}  (% of fraud caught)")
     print(f"  Test F1      : {metrics['f1']}")
+    print(f"  Test Precision: {metrics['precision']}")
 
-    # log tuned run to MLflow
     init_mlflow()
     log_model_run(
-        model_name="XGBoost (Tuned)",
+        model_name="CatBoost (Tuned)",
         model=best_model,
         params=best_params,
         metrics=metrics,
         X_sample=X_test.iloc[:5],
     )
 
-    # save final model
     os.makedirs(MODELS_DIR, exist_ok=True)
-    out_path = os.path.join(MODELS_DIR, 'xgboost_tuned.pkl')
+    out_path = os.path.join(MODELS_DIR, 'catboost_final.pkl')
     joblib.dump(best_model, out_path)
     print(f"\n  Saved : {out_path}")
     print("=" * 55)

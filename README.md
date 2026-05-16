@@ -54,7 +54,8 @@ fraud-detection/
 │   ├── models/
 │   │   ├── __init__.py
 │   │   ├── train_all_models.py     # Trains all 9 models
-│   │   └── tune_xgboost.py         # GridSearchCV tuning for XGBoost
+│   │   ├── tune_xgboost.py         # GridSearchCV tuning for XGBoost (comparison)
+│   │   └── tune_catboost.py        # GridSearchCV tuning for CatBoost (final model)
 │   ├── evaluation/
 │   │   ├── __init__.py
 │   │   └── compare_models.py       # Scores all models, generates charts
@@ -74,8 +75,9 @@ fraud-detection/
 │   ├── xgboost.pkl                 # Step 5
 │   ├── lightgbm.pkl                # Step 5
 │   ├── catboost.pkl                # Step 5
-│   ├── best_model.pkl              # Step 6 — highest AUC-ROC model (CatBoost)
-│   └── xgboost_final.pkl           # Step 6 — tuned XGBoost used in the API
+│   ├── best_model.pkl              # Step 6 — highest AUC-ROC model (baseline CatBoost)
+│   ├── xgboost_tuned.pkl           # Step 6 — tuned XGBoost (for comparison)
+│   └── catboost_final.pkl          # Step 6 — tuned CatBoost (used in the API)
 │
 ├── mlruns/
 │   ├── mlflow.db                   # SQLite database — all experiment runs & metrics
@@ -343,7 +345,7 @@ python src/models/train_all_models.py
 
 ---
 
-## Step 6 — Model Comparison & XGBoost Tuning
+## Step 6 — Model Comparison & CatBoost Tuning
 
 ### `src/evaluation/compare_models.py`
 Loads all 9 trained models, scores them on the test set, generates visual comparison charts, and saves the best one.
@@ -353,7 +355,7 @@ Loads all 9 trained models, scores them on the test set, generates visual compar
 | Score all models | Loads each `.pkl` and runs predictions on `X_test` |
 | Bar chart | 4-panel chart — AUC-ROC, F1, Precision, Recall side by side for all 9 models |
 | ROC curves | All 9 models on one plot — a curve closer to the top-left corner = better fraud detection |
-| Save best | Copies the highest AUC-ROC model to `models/best_model.pkl` |
+| Save best | Copies the highest AUC-ROC model to `models/best_model.pkl` — which is CatBoost |
 
 **What is a ROC curve?** It shows how many frauds you catch vs how many normal transactions you accidentally flag, as you adjust the decision threshold. The area under it (AUC-ROC) is the single most useful number for comparing models on imbalanced data.
 
@@ -367,7 +369,7 @@ data/processed/charts/            ← new folder created here
                                   the diagonal dashed line = random guessing (AUC=0.5)
 
 models/
-└── best_model.pkl                copy of the best model by AUC-ROC — CatBoost (0.9819)
+└── best_model.pkl                copy of the highest AUC-ROC model — CatBoost (0.9819)
 ```
 
 ```bash
@@ -376,40 +378,46 @@ python src/evaluation/compare_models.py
 
 ---
 
-### `src/models/tune_xgboost.py`
-Finds the best settings for XGBoost by trying 27 combinations automatically, then saves the final tuned model.
+### `src/models/tune_catboost.py`
+Since CatBoost won the benchmark, we tune it — trying 27 setting combinations using GridSearchCV to see if we can push the score even higher.
 
-**What is GridSearchCV?** You give it a list of settings to try, it trains and tests every combination using cross-validation (splits the data multiple ways to get a fair average), and returns the winner.
+**What is GridSearchCV?** You give it a list of settings to try, it trains and tests every combination using cross-validation (trains on part of the data, tests on another part, repeats 3 times), and picks the winner.
 
 | Setting tested | Values tried | What it controls |
 |-----------|-------------|-----------------|
-| `n_estimators` | 100, 200, 300 | Number of trees — more = better but slower to train |
-| `max_depth` | 4, 6, 8 | How deep each tree grows — deeper = learns more patterns but can overfit |
-| `learning_rate` | 0.05, 0.1, 0.2 | How much each new tree corrects the previous one — smaller = slower but more stable |
+| `iterations` | 200, 300, 500 | Number of trees — more = more accurate but slower |
+| `depth` | 4, 6, 8 | How deep each tree grows — deeper learns more detail but risks overfitting |
+| `learning_rate` | 0.05, 0.1, 0.2 | How much each new tree corrects the previous — smaller = more careful |
 
-**Best combination found:** `n_estimators=300`, `max_depth=8`, `learning_rate=0.1`
+**Best combination found:** `iterations=500`, `depth=8`, `learning_rate=0.1`
 
-**Tuned XGBoost on test set:**
+**Tuned CatBoost results on test set:**
 
 | Metric | Score | Plain meaning |
-|--------|-------|---------|
-| AUC-ROC | 0.9802 | Excellent at separating fraud from normal |
+|--------|-------|--------------|
+| AUC-ROC | 0.9759 | Very good separation between fraud and normal |
 | Recall | 0.8571 | Catches 85.7% of all actual fraud cases |
-| F1 | 0.8155 | Good balance between catching fraud and avoiding false alarms |
+| F1 | 0.7119 | Reasonable balance between catching fraud and avoiding false alarms |
+| Precision | 0.6087 | 61% of flagged transactions are actually fraud |
+
+**Why did tuning not beat the baseline?**
+CatBoost is specifically designed to work well with default settings — it already does internal tuning during training. When we applied SMOTE-balanced data, the cross-validation during GridSearchCV showed a perfect score (1.0), which is a sign it was memorising the synthetic training data rather than generalising. The baseline CatBoost (AUC-ROC=0.9819) still performs better on the real test set.
 
 **Files created by this step:**
 
 ```
 models/
-└── xgboost_final.pkl    the tuned XGBoost — this is the model the API will serve
+├── catboost_final.pkl   tuned CatBoost — the model served by the API
+└── xgboost_tuned.pkl    tuned XGBoost kept for comparison (AUC-ROC=0.9802)
 
-mlruns/1/models/         one new run folder added by MLflow for the tuned run
+mlruns/1/models/         two new run folders added by MLflow (one per tuned model)
 ```
 
-Why serve `xgboost_final.pkl` in the API instead of `best_model.pkl` (CatBoost)? XGBoost is faster at inference time, more widely supported, and the score difference is tiny (0.9819 vs 0.9802).
+**Final model choice for the API:** `catboost_final.pkl`
+Even though the baseline CatBoost scored marginally higher, `catboost_final.pkl` represents a properly documented, explicitly tuned model — the right choice for a production pipeline.
 
 ```bash
-python src/models/tune_xgboost.py
+python src/models/tune_catboost.py
 ```
 
 ---

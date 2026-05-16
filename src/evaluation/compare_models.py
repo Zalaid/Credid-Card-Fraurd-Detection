@@ -112,6 +112,7 @@ def save_best_model(df):
     joblib.dump(best_model, out_path)
     print(f"  Best   : {best_name}  (AUC-ROC={df.iloc[0]['AUC-ROC']})")
     print(f"  Saved  : {out_path}")
+    print(f"  Note   : Run tune_catboost.py to get the tuned version → catboost_final.pkl")
     return best_name, best_model
 
 
