@@ -9,7 +9,7 @@ A machine learning project that trains and benchmarks 12+ models on real credit 
 | 1 | Project setup & environment | Done |
 | 2 | Dataset download & EDA | Done |
 | 3 | Data preprocessing pipeline | Done |
-| 4 | MLflow experiment tracking setup | Pending |
+| 4 | MLflow experiment tracking setup | Done |
 | 5 | Train & benchmark 12 models | Pending |
 | 6 | Model comparison & XGBoost tuning | Pending |
 | 7 | FastAPI inference service | Pending |
@@ -62,6 +62,29 @@ source venv/bin/activate     # macOS/Linux
 
 # Install dependencies
 pip install -r requirements.txt
+```
+
+## MLflow Experiment Tracking (Step 4)
+
+`src/mlflow_setup.py` configures MLflow before any model is trained.
+
+| What | Detail |
+|------|--------|
+| Backend | SQLite — stored at `mlruns/mlflow.db` (recommended over file-based tracking) |
+| Experiment | `fraud-detection-benchmark` — all 12 model runs are grouped here |
+| `init_mlflow()` | Sets tracking URI and creates the experiment. Called once at the top of the training script |
+| `log_model_run()` | Helper used by every model — logs params, metrics, and the saved model artifact in one call |
+
+**What gets logged per model run:**
+- Hyperparameters (e.g. `n_estimators`, `max_depth`, `learning_rate`)
+- Metrics: `auc_roc`, `f1`, `precision`, `recall`, `accuracy`
+- The fitted model artifact (loadable directly from MLflow)
+- Model signature (input/output schema)
+
+**To open the MLflow dashboard:**
+```bash
+mlflow ui --backend-store-uri sqlite:///mlruns/mlflow.db
+# then open http://localhost:5000
 ```
 
 ## Data Preprocessing Pipeline (Step 3)
