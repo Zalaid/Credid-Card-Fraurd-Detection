@@ -16,7 +16,7 @@ A machine learning project that trains and benchmarks 9 models on real credit ca
 | 6 | Model comparison & XGBoost tuning | Done |
 | 7 | FastAPI inference service | Done |
 | 8 | Tests | Done |
-| 9 | Docker containerization | Pending |
+| 9 | Docker containerization | Done |
 | 10 | CI/CD with GitHub Actions | Pending |
 | 11 | Deploy on Render | Pending |
 | 12 | README & demo polish | Pending |
@@ -97,8 +97,9 @@ fraud-detection/
 │   └── workflows/
 │       └── ci-cd.yml               # (Step 10 — pending)
 │
-├── Dockerfile                      # (Step 9 — pending)
-├── docker-compose.yml              # (Step 9 — pending)
+├── Dockerfile                      # Step 9 — builds the API container image
+├── docker-compose.yml              # Step 9 — runs API + MLflow UI together
+├── .dockerignore                   # Step 9 — keeps image small (excludes data, models, venv)
 ├── requirements.txt
 └── README.md
 ```
@@ -706,6 +707,101 @@ Checks that the FastAPI endpoints behave correctly — correct responses, correc
 | `test_predict_wrong_type_returns_422` | String where float expected returns HTTP 422 |
 
 The fraud and normal test rows come directly from `creditcard.csv` — real transactions that the model was not trained on (they are from the held-out test set), so passing these tests means the model generalises correctly.
+
+---
+
+## Step 9 — Docker Containerization
+
+Docker packages the API and all its dependencies into a single "container" — a sealed box that runs exactly the same on your laptop, your teammate's machine, and any cloud server. Without Docker, you'd have to manually install Python, pip packages, and configure paths on every machine you deploy to.
+
+### `.dockerignore`
+Tells Docker which files and folders to skip when building the image. Smaller image = faster build, faster push to Docker Hub, faster deploy on Render.
+
+| Excluded | Why |
+|----------|-----|
+| `venv/` | Python packages are reinstalled fresh inside the container |
+| `data/`, `notebooks/` | Not needed at runtime — only needed for training |
+| `mlruns/` | Experiment logs are not part of the API |
+| `models/*.pkl` (training models) | Only `xgboost_tuned.pkl` and `scaler.pkl` are needed — the other 9 models add ~70 MB |
+| `catboost_info/`, `creditcard.csv` | Development artifacts, not needed in production |
+
+### `Dockerfile`
+Instructions for building the container image, line by line:
+
+```dockerfile
+FROM python:3.11-slim          # start from a minimal Python 3.11 image (~130 MB)
+
+WORKDIR /app                   # all commands run from /app inside the container
+
+COPY requirements.txt .        # copy requirements first (Docker caches this layer)
+RUN pip install --no-cache-dir -r requirements.txt   # install all packages
+
+COPY src/ ./src/               # copy the application code
+COPY models/xgboost_tuned.pkl ./models/   # copy only the two files the API needs
+COPY models/scaler.pkl        ./models/
+
+EXPOSE 8000                    # tell Docker the app listens on port 8000
+
+HEALTHCHECK ...                # Docker pings /health every 30s to check if the app is alive
+
+CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+```
+
+**Why `--no-cache-dir`?** Pip's download cache is never used inside a container (it gets thrown away when the container stops), so skipping it makes the image smaller.
+
+**Why copy requirements.txt before src/?** Docker builds in layers. If you change only the source code but not requirements.txt, Docker reuses the cached pip install layer and only rebuilds the fast COPY step. This makes rebuilds much faster during development.
+
+**Why `--host 0.0.0.0`?** By default, Uvicorn listens on `127.0.0.1` (localhost only). Inside a container, that means only the container itself can reach it — your laptop can't. `0.0.0.0` means "accept connections from anywhere", which lets Docker forward your laptop's port 8000 into the container.
+
+### `docker-compose.yml`
+Defines two services that start together with one command:
+
+| Service | What it runs | Port |
+|---------|-------------|------|
+| `api` | Builds from Dockerfile, runs the FastAPI fraud detection API | 8000 |
+| `mlflow` | Runs the MLflow tracking UI for viewing experiment results | 5000 |
+
+---
+
+### How to Build and Run
+
+**Prerequisites:** Docker Desktop must be running ([download here](https://www.docker.com/products/docker-desktop/))
+
+```bash
+# Option 1 — build and run just the API
+docker build -t fraud-detection-api .
+docker run -p 8000:8000 fraud-detection-api
+
+# Option 2 — run both API + MLflow UI together (recommended)
+docker-compose up --build
+```
+
+After running, open:
+- **API:** http://localhost:8000/health → should return `{"status": "ok", "model_loaded": true}`
+- **Swagger docs:** http://localhost:8000/docs → interactive API documentation
+- **MLflow UI:** http://localhost:5000 → experiment dashboard
+
+**Test a prediction from inside Docker (same curl command as always):**
+```bash
+curl -X POST http://localhost:8000/predict \
+  -H "Content-Type: application/json" \
+  -d '{
+    "Time": 406, "Amount": 0.0,
+    "V1": -2.3122, "V2": 1.9519, "V3": -1.6097, "V4": 3.9979,
+    "V5": -0.5222, "V6": -1.4265, "V7": -2.5374, "V8": 1.3914,
+    "V9": -2.7700, "V10": -2.7722, "V11": 3.2020, "V12": -2.8992,
+    "V13": -0.5950, "V14": -4.2895, "V15": 0.3898, "V16": -1.1407,
+    "V17": -2.8300, "V18": -0.0168, "V19": 0.4165, "V20": 0.3269,
+    "V21": 0.1474, "V22": -0.1703, "V23": 0.0359, "V24": -0.4118,
+    "V25": 0.0714, "V26": 0.0719, "V27": 0.2127, "V28": 0.0952
+  }'
+# → {"is_fraud": true, "fraud_probability": 1.0, "inference_ms": 4.2}
+```
+
+**To stop everything:**
+```bash
+docker-compose down
+```
 
 ---
 
