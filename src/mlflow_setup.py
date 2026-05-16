@@ -45,7 +45,7 @@ def log_model_run(
         mlflow.log_metrics(metrics)
 
         signature = infer_signature(X_sample, model.predict(X_sample)) if X_sample is not None else None
-        mlflow.sklearn.log_model(model, artifact_path="model", signature=signature)
+        mlflow.sklearn.log_model(model, name="model", signature=signature)
 
         run_id = mlflow.active_run().info.run_id
         print(
