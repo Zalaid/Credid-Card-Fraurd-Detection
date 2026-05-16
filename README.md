@@ -74,9 +74,24 @@ pip install -r requirements.txt
 | Scale | `RobustScaler` on `Amount` and `Time` only — V1–V28 are already PCA-scaled. RobustScaler is used because it ignores outliers (large transaction amounts won't skew the scaling) |
 | Split | 80/20 train/test split, stratified — preserves the 0.17% fraud ratio in both sets |
 | SMOTE | Applied to training data only — synthetic fraud examples added until classes are balanced (394 fraud → 227,451 fraud). Test data is never touched |
-| Save | All splits saved to `data/processed/` as `.pkl` files; scaler saved to `models/scaler.pkl` |
+| Save | Splits saved to `data/processed/`, scaler saved to `models/scaler.pkl` (see files below) |
 
-**Output after running:**
+**Files generated after running:**
+
+```
+data/processed/
+├── X_train_raw.pkl      # Training features (before SMOTE) — 227,845 rows
+├── y_train_raw.pkl      # Training labels  (before SMOTE) — 394 fraud cases
+├── X_train_smote.pkl    # Training features (after SMOTE)  — 454,902 rows (balanced)
+├── y_train_smote.pkl    # Training labels  (after SMOTE)   — 227,451 fraud cases
+├── X_test.pkl           # Test features (never touched by SMOTE) — 56,962 rows
+└── y_test.pkl           # Test labels                           — 98 fraud cases
+
+models/
+└── scaler.pkl           # Fitted RobustScaler — reused by the API at inference time
+```
+
+**Console output:**
 ```
 Train : 227,845 rows  (fraud: 394)
 Test  :  56,962 rows  (fraud: 98)
