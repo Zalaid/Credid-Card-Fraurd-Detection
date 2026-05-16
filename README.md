@@ -1,73 +1,85 @@
 # Fraud Detection MLOps Pipeline
 
-An end-to-end ML pipeline that trains and benchmarks 12+ models on real credit card fraud data, selects the best model (XGBoost), and serves real-time predictions via a FastAPI REST API — packaged in Docker with full CI/CD.
+A machine learning project that trains and benchmarks 12+ models on real credit card fraud data, selects the best model, and serves real-time predictions via a REST API.
 
-## Architecture
+## Project Status
+
+| Step | Description | Status |
+|------|-------------|--------|
+| 1 | Project setup & environment | Done |
+| 2 | Dataset download & EDA | Done |
+| 3 | Data preprocessing pipeline | Pending |
+| 4 | MLflow experiment tracking setup | Pending |
+| 5 | Train & benchmark 12 models | Pending |
+| 6 | Model comparison & XGBoost tuning | Pending |
+| 7 | FastAPI inference service | Pending |
+| 8 | Tests | Pending |
+| 9 | Docker containerization | Pending |
+| 10 | CI/CD with GitHub Actions | Pending |
+| 11 | Deploy on Render | Pending |
+| 12 | README & demo polish | Pending |
+
+## Project Structure
 
 ```
-Raw Data → Preprocessing (SMOTE) → Train 12 Models → MLflow Tracking
-                                                          ↓
-                                               XGBoost (Best Model)
-                                                          ↓
-                                            FastAPI → Docker → Render (Live)
-                                                          ↑
-                                              GitHub Actions CI/CD
-```
-
-## Dataset
-
-[Credit Card Fraud Detection](https://www.kaggle.com/datasets/mlg-ulb/creditcardfraud) — 284,807 transactions, 492 fraudulent (0.17% fraud rate).
-
-## Model Benchmark
-
-| Model | AUC-ROC | F1 | Recall |
-|-------|---------|----|--------|
-| XGBoost | — | — | — |
-| LightGBM | — | — | — |
-| ... | ... | ... | ... |
-
-*(Will be populated after Step 5)*
-
-## Quick Start
-
-```bash
-# 1. Install dependencies
-pip install -r requirements.txt
-
-# 2. Preprocess data
-python src/data/preprocess.py
-
-# 3. Train all models
-python src/models/train_all_models.py
-
-# 4. Start API
-uvicorn src.api.main:app --reload
-```
-
-## API Usage
-
-```bash
-curl -X POST http://localhost:8000/predict \
-  -H "Content-Type: application/json" \
-  -d '{"V1": -1.35, "V2": -0.07, "Amount": 149.62, "Time": 0, ...}'
-```
-
-Response:
-```json
-{"is_fraud": true, "fraud_probability": 0.94, "inference_ms": 8}
-```
-
-## Run with Docker
-
-```bash
-docker build -t fraud-detection-api .
-docker run -p 8000:8000 fraud-detection-api
+fraud-detection/
+├── data/                    # Raw and processed data
+├── notebooks/               # EDA and experimentation
+├── src/
+│   ├── data/                # Data loading and preprocessing
+│   ├── models/              # Model training scripts
+│   ├── evaluation/          # Metrics and comparison
+│   └── api/                 # FastAPI application
+├── mlruns/                  # MLflow experiment logs
+├── models/                  # Saved trained models
+├── tests/                   # Unit and integration tests
+├── .github/workflows/       # CI/CD pipeline (populated in Step 10)
+├── requirements.txt
+└── README.md
 ```
 
 ## Tech Stack
 
 - **ML:** scikit-learn, XGBoost, LightGBM, CatBoost
-- **Tracking:** MLflow
+- **Imbalance handling:** SMOTE (imbalanced-learn)
+- **Experiment tracking:** MLflow
 - **API:** FastAPI + Uvicorn
-- **Imbalance:** SMOTE (imbalanced-learn)
-- **Infra:** Docker, GitHub Actions, Render
+- **Containerization:** Docker
+- **CI/CD:** GitHub Actions
+- **Deployment:** Render (free tier)
+
+## Setup
+
+```bash
+# Clone the repo
+git clone <repo-url>
+cd fraud-detection
+
+# Create and activate virtual environment
+python -m venv venv
+venv\Scripts\activate        # Windows
+source venv/bin/activate     # macOS/Linux
+
+# Install dependencies
+pip install -r requirements.txt
+```
+
+## CI/CD Pipeline (.github/workflows/)
+
+This folder is intentionally empty until **Step 10**. GitHub Actions automatically scans `.github/workflows/` for `.yml` files every time you push code to GitHub. Once `ci-cd.yml` is added there, every push to `main` will trigger this automated sequence:
+
+```
+git push → GitHub detects .github/workflows/ci-cd.yml →
+  [1] Lint   — checks code style (flake8)
+  [2] Test   — runs pytest, all tests must pass
+  [3] Build  — builds the Docker image
+  [4] Push   — uploads image to Docker Hub
+  [5] Deploy — triggers a redeploy on Render (live URL updates automatically)
+```
+
+Nothing runs until the file exists there — that is why the folder is empty right now.
+
+## Dataset
+
+Credit Card Fraud Detection — 284,807 transactions, 492 fraudulent (0.17% fraud rate).  
+Source: [Kaggle](https://www.kaggle.com/datasets/mlg-ulb/creditcardfraud)
