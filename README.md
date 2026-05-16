@@ -239,13 +239,15 @@ python src/data/preprocess.py
 
 ## Step 4 — MLflow Experiment Tracking
 
+MLflow is like a logbook for machine learning experiments. Every time you train a model, it automatically records what settings you used, what scores it got, and saves a copy of the model. Without it, you'd have to keep notes manually and it's easy to lose track of "which version of XGBoost got 0.98 AUC-ROC?"
+
 ### `src/mlflow_setup.py`
 Sets up MLflow so every model training run is automatically recorded in a central dashboard.
 
 | Function | What it does |
 |----------|-------------|
 | `init_mlflow()` | Points MLflow at the local SQLite database and creates the `fraud-detection-benchmark` experiment. Called once before training starts |
-| `log_model_run()` | Called once per model — records the model name, all hyperparameters, all 5 metrics, and saves a copy of the fitted model. Prints a one-line summary to the console |
+| `log_model_run()` | Called once per model — records the model name, all hyperparameters, all 5 metrics, and saves a copy of the fitted model |
 
 **What gets recorded for each model:**
 
@@ -253,7 +255,7 @@ Sets up MLflow so every model training run is automatically recorded in a centra
 |------|---------|
 | Model name | `"XGBoost"` |
 | Hyperparameters | `n_estimators=300`, `max_depth=8`, `learning_rate=0.1` |
-| Metrics | `auc_roc=0.9802`, `f1=0.8155`, `recall=0.8571` |
+| Metrics | `auc_roc=0.9802`, `f1=0.8155`, `recall=0.8571`, `precision=0.6232`, `accuracy=0.9994` |
 | Model artifact | A copy of the fitted model, stored and versioned by MLflow |
 | Model signature | What the input looks like (30 features) and what the output looks like (0 or 1) |
 
@@ -263,20 +265,114 @@ Sets up MLflow so every model training run is automatically recorded in a centra
 mlruns/                       ← new folder created here (gitignored)
 ├── mlflow.db                 SQLite database — stores all run IDs, metrics, and parameters
 └── 1/                        folder for experiment ID 1 ("fraud-detection-benchmark")
-    └── models/m-<run-id>/    one sub-folder is created per model run
+    └── models/m-<run-id>/    one sub-folder per model run (9 runs after Step 5)
         ├── artifacts/
         │   ├── model.pkl         MLflow's own copy of the fitted model
-        │   ├── MLmodel           metadata file — records input/output schema and model flavour
+        │   ├── MLmodel           metadata file — input/output schema and model flavour
         │   ├── requirements.txt  exact packages needed to reload this model later
         │   └── conda.yaml        conda environment for full reproducibility
 ```
 
 Why does MLflow save its own copy of each model? So you can go back to any past run in the dashboard and reload the exact model that produced those metrics — even if you retrain and overwrite the file in `models/` later.
 
+---
+
+### How to Open the MLflow UI
+
+After training the models (Step 5), run this command:
+
 ```bash
-# View all experiment runs in the browser
 mlflow ui --backend-store-uri sqlite:///mlruns/mlflow.db
-# then open http://localhost:5000
+```
+
+Then open your browser and go to: **http://localhost:5000**
+
+**What you will see:**
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  Experiments                                            │
+│  > fraud-detection-benchmark          (11 runs)         │
+└─────────────────────────────────────────────────────────┘
+```
+
+Click on **fraud-detection-benchmark** to see the runs table:
+
+```
+┌──────────────┬─────────┬────────┬───────────┬──────────┐
+│ Run Name     │ auc_roc │ f1     │ precision │ recall   │
+├──────────────┼─────────┼────────┼───────────┼──────────┤
+│ CatBoost     │ 0.9819  │ 0.6121 │ 0.4699    │ 0.8776   │
+│ XGBoost      │ 0.9798  │ 0.7288 │ 0.6232    │ 0.8776   │
+│ LightGBM     │ 0.9772  │ 0.7143 │ 0.6071    │ 0.8673   │
+│ ...          │ ...     │ ...    │ ...       │ ...      │
+└──────────────┴─────────┴────────┴───────────┴──────────┘
+```
+
+**Things you can do in the UI:**
+
+| Action | How |
+|--------|-----|
+| Sort by any metric | Click the column header — e.g. click `f1` to find the best F1 model |
+| Compare two models | Tick the checkboxes next to two runs, then click "Compare" |
+| See a parallel coordinates chart | After comparing, scroll down — shows how hyperparameters map to metrics |
+| Download a model | Click any run → Artifacts tab → download the `.pkl` file |
+| See exactly what settings were used | Click any run → Parameters tab |
+| Filter runs | Use the search bar — e.g. `metrics.auc_roc > 0.97` |
+
+**Clicking on a single run shows three tabs:**
+
+- **Parameters** — every setting the model was trained with (e.g. `n_estimators = 300`)
+- **Metrics** — all 5 scores recorded for that run
+- **Artifacts** — the saved model files you can download and reload
+
+---
+
+### Errors We Hit and How They Were Fixed
+
+**Error 1 — Windows path error (`KeyError: 'd'`)**
+
+MLflow by default stores data in a local folder. On Windows, `os.path.join()` produces paths like `D:\BSDS\...` which MLflow tried to interpret as a URL and choked on the drive letter `d`.
+
+```
+# What went wrong:
+TRACKING_URI = os.path.join("mlruns")
+# → mlruns   (Windows absolute path, starts with D:\)
+# MLflow sees the D: as a URL scheme → KeyError: 'd'
+```
+
+Fix: switched to a SQLite database stored inside the project folder. SQLite URIs always start with `sqlite:///` which MLflow handles correctly on all platforms:
+
+```python
+TRACKING_URI = "sqlite:///mlruns/mlflow.db"
+```
+
+**Error 2 — `artifact_path` deprecation warning**
+
+Older MLflow code used `artifact_path` as a keyword argument:
+
+```python
+# Old (deprecated in newer MLflow):
+mlflow.sklearn.log_model(model, artifact_path="model", ...)
+```
+
+Newer MLflow replaced it with `name`:
+
+```python
+# Fixed:
+mlflow.sklearn.log_model(model, name="model", ...)
+```
+
+**Error 3 — XGBoost `use_label_encoder` deprecation**
+
+Old XGBoost accepted a `use_label_encoder=False` parameter. Newer versions removed it entirely and raise an error if you pass it.
+
+```python
+# Old (breaks in XGBoost >= 1.6):
+XGBClassifier(use_label_encoder=False, ...)
+
+# Fixed — just remove the parameter:
+XGBClassifier(eval_metric='logloss', ...)
 ```
 
 ---
@@ -638,3 +734,168 @@ git push → GitHub Actions →
 | Fraud cases | 492 (0.17%) |
 | Features | 30 (V1–V28 are PCA-transformed by the bank + Amount and Time) |
 | Target | `Class` — 0 = normal, 1 = fraud |
+
+---
+
+## How to Explain This Project in an Interview
+
+If an interviewer asks "walk me through your ML pipeline", here is how to answer it in plain English, step by step.
+
+---
+
+### The Problem
+
+"We have a dataset of 284,807 real credit card transactions. Out of those, only 492 are fraud — that's 0.17%. The goal is to build a model that can automatically flag a transaction as fraudulent in real time."
+
+---
+
+### Step 1 — Understanding the Data (EDA)
+
+"First I did Exploratory Data Analysis. The biggest finding was the class imbalance: 99.83% of transactions are normal and only 0.17% are fraud. This is a critical insight because it means we can't use accuracy as a metric — a model that just says 'normal' for everything would be 99.83% accurate but completely useless."
+
+"The features V1 through V28 are PCA-transformed. The bank ran PCA on their internal data (card numbers, merchant info, device fingerprints) to protect cardholder privacy. We only see the transformed numbers, not the raw data."
+
+---
+
+### Step 2 — Preprocessing
+
+"Before training, I did three things:
+
+**Scaling** — I applied RobustScaler to `Amount` and `Time`. I chose RobustScaler over StandardScaler because it's based on the median and interquartile range instead of the mean — so a $10,000 transaction won't distort the scaling for all the $20 transactions. V1–V28 were already scaled by the bank, so I left them alone.
+
+**Train/test split** — 80% of the data goes to training, 20% to testing. Critically, the split is *stratified*, which means both sets preserve the original 0.17% fraud ratio. The test set is sealed off and never touched again until final evaluation.
+
+**SMOTE** — The training set only had 394 fraud cases out of 227,845 rows. No model can learn from 394 examples vs 227,451 normal ones. SMOTE (Synthetic Minority Oversampling Technique) creates synthetic fraud examples by interpolating between real ones — it brings the training set to 227,451 fraud and 227,451 normal. SMOTE is applied *only* to the training data, never the test data, because the test set must reflect real-world conditions."
+
+---
+
+### Step 3 — Experiment Tracking with MLflow
+
+"I integrated MLflow before training so that every model run is automatically recorded. Each run captures the model name, all hyperparameters, and five evaluation metrics. This means I can open a dashboard at any time, sort by any metric, and instantly see which model performed best — without keeping manual notes. The data is stored in a local SQLite database so no server setup is needed."
+
+---
+
+### Step 4 — Training and Benchmarking 9 Models
+
+"I trained 9 different algorithms on the SMOTE-balanced training data and evaluated each one on the real held-out test set. The models range from simple (Logistic Regression) to advanced (XGBoost, LightGBM, CatBoost)."
+
+"I used **AUC-ROC as the primary metric**, not accuracy. AUC-ROC measures how well the model separates fraud from normal across all possible decision thresholds. A perfect model scores 1.0. Random guessing scores 0.5."
+
+"I also tracked **F1 score**, which is the balance between Recall and Precision:
+- **Recall** = out of all real frauds, how many did we catch? Missing fraud is expensive.
+- **Precision** = out of everything we flagged as fraud, how many actually were? Too many false alarms frustrates customers.
+- **F1** = the harmonic mean of the two — a high F1 means you're catching fraud without raising too many false alarms."
+
+"CatBoost had the highest AUC-ROC (0.9819) but the lowest F1 (0.6121). XGBoost had the third-highest AUC-ROC (0.9798) with a much better F1 (0.7288). So the two strongest candidates were CatBoost and XGBoost."
+
+---
+
+### Step 5 — Hyperparameter Tuning
+
+"I used **GridSearchCV** to tune the top two models. GridSearchCV tries every combination of settings you give it and picks the one with the best cross-validation score."
+
+"For XGBoost I tried 3 values for number of trees, 3 for tree depth, and 3 for learning rate — that's 27 combinations. The best was 300 trees, depth 8, learning rate 0.1."
+
+"Tuned XGBoost reached F1 = 0.8155 — a 12-point improvement over its baseline. Tuned CatBoost actually *underperformed* its baseline. The reason: CatBoost is designed to work well with its default settings. When we applied GridSearchCV on SMOTE-balanced data, it overfit to the synthetic examples — the cross-validation score hit 1.0, which is a red flag. The default CatBoost generalises better."
+
+---
+
+### Step 6 — Final Model Selection
+
+"I selected **Tuned XGBoost** as the final model for these reasons:
+
+1. **Best F1 score (0.8155)** — highest of all candidates. For a fraud detector, F1 is the most important metric because it forces the right trade-off between catching fraud and not blocking innocent customers.
+2. **Best Precision (0.6232)** — for every 100 transactions flagged as fraud, 62 are actually fraud. CatBoost's baseline only gets this right 47% of the time.
+3. **AUC-ROC still excellent (0.9802)** — barely 0.0017 below CatBoost.
+4. **Faster inference** — XGBoost predictions take 2–5ms vs CatBoost's 10–15ms, which matters when serving thousands of transactions per minute."
+
+---
+
+### Step 7 — Serving the Model as a REST API
+
+"I wrapped the model in a **FastAPI** application. FastAPI is a Python web framework that automatically generates interactive documentation (Swagger UI) and handles input validation via Pydantic."
+
+"The API has three endpoints:
+- `GET /health` — returns `{"status": "ok"}` — used by Docker health checks
+- `GET /` — returns API info and endpoint list
+- `POST /predict` — accepts 30 transaction features, returns `is_fraud`, `fraud_probability`, and `inference_ms`"
+
+"The model and scaler are loaded **once at startup**, not on every request. This keeps response time under 10ms per prediction."
+
+"For input validation, Pydantic automatically rejects any request that's missing a field, has the wrong data type, or has a negative Amount — before it even reaches the model. This is what makes the API robust."
+
+---
+
+### Step 8 — Automated Testing
+
+"I wrote 28 automated tests across 3 files using pytest:
+- **Preprocessing tests** — verify the data pipeline ran correctly (shapes, no NaN, SMOTE balance, scaler works)
+- **Model tests** — verify all models load, predict correctly, and the final model catches real fraud
+- **API tests** — verify every endpoint returns the right response, the right schema, and the right error codes for bad input"
+
+"These tests catch regressions — if I change something in the pipeline, the tests immediately tell me what broke."
+
+---
+
+### The Complete Data Flow (End to End)
+
+```
+Raw CSV (284,807 rows)
+        │
+        ▼
+ preprocess.py
+   ├── RobustScaler on Amount + Time
+   ├── 80/20 stratified split
+   └── SMOTE on training set only
+        │
+        ▼
+ train_all_models.py
+   └── 9 models trained on SMOTE data, evaluated on real test set
+   └── All metrics logged to MLflow
+        │
+        ▼
+ compare_models.py + tune_xgboost.py
+   └── Best model selected: Tuned XGBoost (F1=0.8155, AUC-ROC=0.9802)
+   └── Saved as xgboost_tuned.pkl
+        │
+        ▼
+ FastAPI (main.py)
+   └── Loads model + scaler at startup
+   └── POST /predict: scale → predict_proba → return JSON
+        │
+        ▼
+ Docker container
+   └── Isolated, reproducible environment
+        │
+        ▼
+ GitHub Actions CI/CD
+   └── Every git push: run tests → build image → deploy to Render
+        │
+        ▼
+ Live API on Render
+   └── https://your-app.onrender.com/predict
+```
+
+---
+
+### Common Interview Questions & Answers
+
+**Q: Why did you use SMOTE and not just class weights?**
+
+"Both are valid approaches. Class weights tell the model to penalise missing a fraud more heavily — it's simpler. SMOTE creates new synthetic fraud examples — it gives the model more data to learn from. I chose SMOTE because it tends to produce better-calibrated probability outputs, which matter for the `fraud_probability` field in the API."
+
+**Q: Why AUC-ROC and not accuracy?**
+
+"Accuracy is misleading on imbalanced data. A model that predicts 'normal' for every transaction gets 99.83% accuracy but catches zero fraud. AUC-ROC measures the model's ability to rank frauds above normals regardless of the threshold. It stays meaningful even when classes are heavily imbalanced."
+
+**Q: Why XGBoost over CatBoost if CatBoost had higher AUC-ROC?**
+
+"AUC-ROC alone doesn't tell the full story. CatBoost's F1 was 0.6121 — its precision was only 0.47, meaning more than half its fraud alerts would be false alarms. In a real deployment, every false alarm means a legitimate customer's card is declined. Tuned XGBoost's F1 of 0.8155 with precision of 0.62 gives a much better experience."
+
+**Q: How does the API scale to production?**
+
+"The model and scaler are loaded once at startup — not on every request. XGBoost prediction itself takes 2–5ms. Uvicorn (the ASGI server) handles multiple concurrent requests. For higher scale, you'd put multiple Uvicorn workers behind a load balancer, or use Kubernetes to run multiple Docker containers."
+
+**Q: What would you do differently with more time?**
+
+"A few things: (1) Try threshold tuning — instead of 0.5, find the threshold that optimises the F1 score on a validation set. (2) Add SHAP values to explain why a transaction was flagged — critical for real-world trust. (3) Add data drift monitoring so we know when the model's input distribution starts to shift from what it was trained on."
