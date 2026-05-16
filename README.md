@@ -768,7 +768,7 @@ Defines two services that start together with one command:
 To test it: Start Docker Desktop, then run docker-compose up --build from the project folder. Docker Desktop isn't currently running so the build couldn't be
   verified, but the files are correct. Ready for Step 10 (CI/CD) whenever you are.
 
-**Prerequisites:** Docker Desktop must be running ([download here](https://www.docker.com/products/docker-desktop/))
+**Prerequisites:** Docker Desktop must be running  ([download here](https://www.docker.com/products/docker-desktop/))
 
 ```bash
 # Option 1 — build and run just the API
