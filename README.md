@@ -116,28 +116,44 @@ pip install -r requirements.txt
 
 ## Step 1 — Project Setup & Environment
 
-**Files created:** `requirements.txt`, `.gitignore`, `README.md`, full folder structure, `src/` and `tests/` package init files.
+### `requirements.txt`
+Lists every Python package the project depends on, grouped by purpose. All versions use `>=` (minimum version) instead of `==` (exact version) so pip automatically picks pre-built binary wheels for Python 3.13 — avoids compilation errors on Windows.
 
-**Dependencies in `requirements.txt`:**
+| Group | Packages | Purpose |
+|-------|---------|---------|
+| Core data science | pandas, numpy, scikit-learn, scipy | Data loading, manipulation, ML algorithms |
+| Visualization | matplotlib, seaborn | Charts and plots in the EDA notebook |
+| Gradient boosting | xgboost, lightgbm, catboost | The three advanced boosting libraries we benchmark |
+| Imbalance | imbalanced-learn | Provides SMOTE to fix the 578:1 class imbalance |
+| Experiment tracking | mlflow | Records every model's metrics and artifacts |
+| Web API | fastapi, uvicorn, pydantic | FastAPI is the framework, uvicorn runs it, pydantic validates input |
+| Testing | pytest, pytest-cov, httpx | pytest runs tests, httpx lets us call the API in tests |
+| Notebooks | jupyter, nbconvert | Run and execute `.ipynb` notebooks |
+| Utilities | joblib, python-dotenv | joblib saves/loads `.pkl` files, dotenv loads env variables |
 
-| Group | Packages |
-|-------|---------|
-| Core data science | pandas, numpy, scikit-learn, scipy, matplotlib, seaborn |
-| Gradient boosting | xgboost, lightgbm, catboost |
-| Imbalance | imbalanced-learn (SMOTE) |
-| Experiment tracking | mlflow |
-| Web API | fastapi, uvicorn, pydantic |
-| Testing | pytest, pytest-cov, httpx |
-| Notebooks | jupyter, nbconvert |
-| Utilities | joblib, python-dotenv |
+### `.gitignore`
+Tells git which files and folders to never commit. Key exclusions:
 
-**Python version:** 3.13.5 — all packages pinned with `>=` so pip resolves pre-built wheels automatically.
+| Excluded | Why |
+|----------|-----|
+| `data/raw/*.csv` | Dataset is 144 MB — too large for git |
+| `data/processed/` | Generated files — reproducible by running `preprocess.py` |
+| `models/*.pkl` | Large binary files — tracked via MLflow instead |
+| `mlruns/` | Auto-generated experiment logs |
+| `venv/` | Virtual environment — each developer creates their own |
+| `.env` | Would expose secrets (API keys, passwords) |
+
+### `src/__init__.py`, `src/data/__init__.py`, etc.
+Empty files that tell Python "this folder is a package." Without them, `from src.data.preprocess import run` would fail with an import error. Every subfolder under `src/` and `tests/` has one.
+
+### Folder structure
+Created upfront so every future script has a predictable place to read from and write to — no hardcoded paths scattered across files.
 
 ---
 
 ## Step 2 — EDA Notebook
 
-**File:** `notebooks/01_eda.ipynb`
+### `notebooks/01_eda.ipynb`
 
 | Section | What it shows |
 |---------|--------------|
@@ -163,7 +179,7 @@ jupyter nbconvert --to notebook --execute notebooks/01_eda.ipynb --output 01_eda
 
 ## Step 3 — Data Preprocessing Pipeline
 
-**File:** `src/data/preprocess.py`
+### `src/data/preprocess.py`
 
 | Stage | Detail |
 |-------|--------|
@@ -195,20 +211,26 @@ python src/data/preprocess.py
 
 ## Step 4 — MLflow Experiment Tracking
 
-**File:** `src/mlflow_setup.py`
+### `src/mlflow_setup.py`
+Configures MLflow and provides a reusable logging helper so every model training script logs results in exactly the same way.
 
-| What | Detail |
-|------|--------|
-| Backend | SQLite — `mlruns/mlflow.db` (recommended over deprecated file-based tracking) |
-| Experiment | `fraud-detection-benchmark` — all 12 model runs grouped here |
-| `init_mlflow()` | Sets tracking URI, creates the experiment. Called once before any training |
-| `log_model_run()` | Reusable helper — logs params, metrics, and fitted model artifact in one call |
+| Function | What it does |
+|----------|-------------|
+| `init_mlflow()` | Points MLflow at the SQLite database, creates the `fraud-detection-benchmark` experiment if it doesn't exist. Called once at the top of the training script |
+| `log_model_run()` | Called once per model — opens an MLflow run, logs all params and metrics, saves the fitted model as an artifact, then closes the run. Prints a one-line summary to the console |
 
-**Logged per model run:**
-- Hyperparameters (`n_estimators`, `max_depth`, `learning_rate`, etc.)
-- Metrics: `auc_roc`, `f1`, `precision`, `recall`, `accuracy`
-- Fitted model artifact (reloadable directly from MLflow)
-- Model signature (input/output schema for the API)
+**What `log_model_run()` records for each model:**
+
+| Logged item | Example |
+|-------------|---------|
+| Tag | `model_name = "XGBoost"` |
+| Hyperparameters | `n_estimators=300`, `max_depth=6`, `learning_rate=0.1` |
+| Metrics | `auc_roc=0.9821`, `f1=0.8734`, `precision=0.912`, `recall=0.847`, `accuracy=0.9993` |
+| Model artifact | Fitted model saved and versioned inside MLflow |
+| Model signature | Input schema (30 features) + output schema (0 or 1) — used by the API |
+
+### `mlruns/mlflow.db`
+SQLite database file auto-created when `init_mlflow()` runs for the first time. Stores all experiment metadata, run IDs, parameters, metrics, and artifact paths. Excluded from git via `.gitignore` — regenerated automatically when training runs.
 
 ```bash
 # Open MLflow dashboard after Step 5 trains the models
