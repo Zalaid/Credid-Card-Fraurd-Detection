@@ -1,6 +1,6 @@
 # Fraud Detection MLOps Pipeline
 
-A machine learning project that trains and benchmarks 12+ models on real credit card fraud data, selects the best model (XGBoost), and serves real-time predictions via a FastAPI REST API — packaged in Docker with full CI/CD.
+A machine learning project that trains and benchmarks 9 models on real credit card fraud data, selects the best model, and serves real-time predictions via a FastAPI REST API — packaged in Docker with full CI/CD.
 
 ---
 
@@ -12,7 +12,7 @@ A machine learning project that trains and benchmarks 12+ models on real credit 
 | 2 | Dataset download & EDA | Done |
 | 3 | Data preprocessing pipeline | Done |
 | 4 | MLflow experiment tracking setup | Done |
-| 5 | Train & benchmark 12 models | Done |
+| 5 | Train & benchmark 9 models | Done |
 | 6 | Model comparison & XGBoost tuning | Done |
 | 7 | FastAPI inference service | Pending |
 | 8 | Tests | Pending |
@@ -29,14 +29,18 @@ A machine learning project that trains and benchmarks 12+ models on real credit 
 fraud-detection/
 ├── data/
 │   ├── raw/
-│   │   └── creditcard.csv          # Original Kaggle dataset (284,807 rows)
+│   │   ├── creditcard.csv          # Original Kaggle dataset (284,807 rows)
+│   │   └── class_distribution.png  # Pie chart from EDA
 │   └── processed/
 │       ├── X_train_raw.pkl         # Training features before SMOTE
 │       ├── y_train_raw.pkl         # Training labels  before SMOTE
 │       ├── X_train_smote.pkl       # Training features after SMOTE (balanced)
 │       ├── y_train_smote.pkl       # Training labels  after SMOTE (balanced)
 │       ├── X_test.pkl              # Test features (never touched by SMOTE)
-│       └── y_test.pkl              # Test labels
+│       ├── y_test.pkl              # Test labels
+│       └── charts/
+│           ├── metric_comparison.png  # Bar chart comparing all models
+│           └── roc_curves.png         # ROC curves for all models
 │
 ├── notebooks/
 │   └── 01_eda.ipynb                # Exploratory data analysis
@@ -49,17 +53,17 @@ fraud-detection/
 │   │   └── preprocess.py           # Scaling, train/test split, SMOTE
 │   ├── models/
 │   │   ├── __init__.py
-│   │   ├── train_all_models.py     # Step 5 — trains all 9 models
-│   └── tune_xgboost.py         # Step 6 — GridSearchCV tuning
+│   │   ├── train_all_models.py     # Trains all 9 models
+│   │   └── tune_xgboost.py         # GridSearchCV tuning for XGBoost
 │   ├── evaluation/
 │   │   ├── __init__.py
-│   │   └── compare_models.py       # Step 6 — scores all models, generates charts
+│   │   └── compare_models.py       # Scores all models, generates charts
 │   └── api/
 │       ├── __init__.py
 │       ├── main.py                 # (Step 7 — pending)
 │       └── schemas.py              # (Step 7 — pending)
 │
-├── models/                          # 12 .pkl files total
+├── models/
 │   ├── scaler.pkl                  # Step 3 — RobustScaler (not a model)
 │   ├── logistic_regression.pkl     # Step 5
 │   ├── decision_tree.pkl           # Step 5
@@ -74,7 +78,12 @@ fraud-detection/
 │   └── xgboost_final.pkl           # Step 6 — tuned XGBoost used in the API
 │
 ├── mlruns/
-│   └── mlflow.db                   # SQLite database for MLflow experiment tracking
+│   ├── mlflow.db                   # SQLite database — all experiment runs & metrics
+│   └── 1/                          # Experiment folder (ID=1)
+│       └── models/m-<id>/          # One folder per model run
+│           ├── artifacts/model.pkl # Model copy saved by MLflow
+│           ├── artifacts/MLmodel   # MLflow metadata (input/output schema)
+│           └── artifacts/requirements.txt
 │
 ├── tests/
 │   ├── __init__.py
@@ -129,13 +138,13 @@ pip install -r requirements.txt
 ## Step 1 — Project Setup & Environment
 
 ### `requirements.txt`
-Lists every Python package the project depends on, grouped by purpose. All versions use `>=` (minimum version) instead of `==` (exact version) so pip automatically picks pre-built binary wheels for Python 3.13 — avoids compilation errors on Windows.
+Lists every Python package the project needs, grouped by purpose. All versions use `>=` so pip automatically picks pre-built wheels for Python 3.13 — avoids build errors on Windows.
 
 | Group | Packages | Purpose |
 |-------|---------|---------|
 | Core data science | pandas, numpy, scikit-learn, scipy | Data loading, manipulation, ML algorithms |
 | Visualization | matplotlib, seaborn | Charts and plots in the EDA notebook |
-| Gradient boosting | xgboost, lightgbm, catboost | The three advanced boosting libraries we benchmark |
+| Gradient boosting | xgboost, lightgbm, catboost | The advanced boosting libraries we benchmark |
 | Imbalance | imbalanced-learn | Provides SMOTE to fix the 578:1 class imbalance |
 | Experiment tracking | mlflow | Records every model's metrics and artifacts |
 | Web API | fastapi, uvicorn, pydantic | FastAPI is the framework, uvicorn runs it, pydantic validates input |
@@ -144,46 +153,48 @@ Lists every Python package the project depends on, grouped by purpose. All versi
 | Utilities | joblib, python-dotenv | joblib saves/loads `.pkl` files, dotenv loads env variables |
 
 ### `.gitignore`
-Tells git which files and folders to never commit. Key exclusions:
+Tells git which files and folders to never commit.
 
 | Excluded | Why |
 |----------|-----|
 | `data/raw/*.csv` | Dataset is 144 MB — too large for git |
-| `data/processed/` | Generated files — reproducible by running `preprocess.py` |
+| `data/processed/` | Auto-generated — reproducible by running `preprocess.py` |
 | `models/*.pkl` | Large binary files — tracked via MLflow instead |
 | `mlruns/` | Auto-generated experiment logs |
 | `venv/` | Virtual environment — each developer creates their own |
-| `.env` | Would expose secrets (API keys, passwords) |
+| `.env` | Would expose secrets like API keys |
 
 ### `src/__init__.py`, `src/data/__init__.py`, etc.
-Empty files that tell Python "this folder is a package." Without them, `from src.data.preprocess import run` would fail with an import error. Every subfolder under `src/` and `tests/` has one.
-
-### Folder structure
-Created upfront so every future script has a predictable place to read from and write to — no hardcoded paths scattered across files.
+Empty files that tell Python "this folder is a package." Without them, importing code across folders (e.g. `from src.data.preprocess import run`) would fail. Every subfolder under `src/` and `tests/` has one.
 
 ---
 
 ## Step 2 — EDA Notebook
 
 ### `notebooks/01_eda.ipynb`
+A Jupyter notebook that explores the raw dataset before any modelling. Run it to understand the data.
 
 | Section | What it shows |
 |---------|--------------|
 | Data overview | Shape (284,807 × 31), dtypes, memory usage |
-| Missing values | Zero missing values — dataset is clean |
-| Class imbalance | 99.83% normal, 0.17% fraud — 578:1 ratio (pie chart + bar chart) |
-| Amount analysis | Fraud transactions tend to be smaller; histogram + box plot by class |
-| Time analysis | Normal transactions dip at night; fraud is spread evenly throughout the day |
-| V1–V28 distributions | Side-by-side histograms — V4, V11, V12, V14, V17 show strongest class separation |
+| Missing values | Zero missing values — dataset is clean, no fixes needed |
+| Class imbalance | 99.83% normal, 0.17% fraud — 578:1 ratio |
+| Amount analysis | Fraud transactions tend to be smaller on average |
+| Time analysis | Normal transactions dip at night; fraud is spread throughout the day |
+| V1–V28 distributions | V4, V11, V12, V14, V17 show the clearest difference between fraud and normal |
 | Correlation heatmap | Full 31×31 feature correlation matrix |
-| Fraud correlations | Ranked bar chart of features most correlated with fraud |
-| Key findings | Summary + why SMOTE and AUC-ROC are the right choices for this dataset |
+| Fraud correlations | Which features are most linked to fraud |
+| Key findings | Why SMOTE and AUC-ROC are the right choices for this dataset |
+
+**Folders and files created by this step:**
+
+`data/raw/class_distribution.png` — the pie chart + bar chart showing class imbalance, saved automatically when the notebook runs.
 
 ```bash
-# Run interactively
+# Open and run interactively
 jupyter notebook notebooks/01_eda.ipynb
 
-# Run headlessly from terminal (executes all cells and saves output)
+# Run all cells from the terminal without opening a browser
 jupyter nbconvert --to notebook --execute notebooks/01_eda.ipynb --output 01_eda.ipynb --output-dir notebooks/
 ```
 
@@ -192,27 +203,30 @@ jupyter nbconvert --to notebook --execute notebooks/01_eda.ipynb --output 01_eda
 ## Step 3 — Data Preprocessing Pipeline
 
 ### `src/data/preprocess.py`
+Reads the raw CSV, cleans and transforms the data, and saves everything ready for training.
 
-| Stage | Detail |
-|-------|--------|
+| Stage | What happens |
+|-------|-------------|
 | Load | Reads `data/raw/creditcard.csv` |
-| Scale | `RobustScaler` on `Amount` and `Time` only — V1–V28 are already PCA-scaled. RobustScaler ignores outliers so large amounts don't skew the scaling |
-| Split | 80/20 stratified split — preserves 0.17% fraud ratio in both train and test sets |
-| SMOTE | Applied to training data only — fraud examples grow from 394 → 227,451 (balanced). Test data is never touched |
-| Save | All splits written to `data/processed/`; fitted scaler written to `models/scaler.pkl` |
+| Scale | Applies `RobustScaler` to `Amount` and `Time` only. V1–V28 are already scaled by the bank. RobustScaler is chosen because it ignores extreme outliers — a $10,000 transaction won't distort the scaling |
+| Split | 80% goes to training, 20% to testing. The split is stratified — meaning both sets keep the same 0.17% fraud ratio as the original |
+| SMOTE | Fraud cases in the training set grow from 394 → 227,451 by creating synthetic examples. The test set is never touched — it stays real-world imbalanced |
+| Save | All splits saved as `.pkl` files; scaler saved separately |
 
-**Generated files:**
+**Folders and files created by this step:**
+
 ```
-data/processed/
-├── X_train_raw.pkl      # 227,845 rows — original imbalanced training features
-├── y_train_raw.pkl      # 394 fraud cases out of 227,845
-├── X_train_smote.pkl    # 454,902 rows — SMOTE-balanced training features
-├── y_train_smote.pkl    # 227,451 fraud cases (perfectly balanced)
-├── X_test.pkl           # 56,962 rows — test features (untouched)
-└── y_test.pkl           # 98 fraud cases out of 56,962
+data/processed/               ← new folder created here
+├── X_train_raw.pkl           training features (before SMOTE) — 227,845 rows
+├── y_train_raw.pkl           training labels  (before SMOTE) — only 394 fraud
+├── X_train_smote.pkl         training features (after SMOTE)  — 454,902 rows, perfectly balanced
+├── y_train_smote.pkl         training labels  (after SMOTE)   — 227,451 fraud, 227,451 normal
+├── X_test.pkl                test features — 56,962 rows, never modified
+└── y_test.pkl                test labels   — 98 fraud out of 56,962
 
 models/
-└── scaler.pkl           # Fitted RobustScaler — loaded by the API at inference time
+└── scaler.pkl                the fitted RobustScaler — the API loads this at startup to scale
+                              incoming transaction data before passing it to the model
 ```
 
 ```bash
@@ -221,65 +235,46 @@ python src/data/preprocess.py
 
 ---
 
-## Step 6 — Model Comparison & XGBoost Tuning
+## Step 4 — MLflow Experiment Tracking
 
-### `src/evaluation/compare_models.py`
-Loads all 9 saved models, scores them on the test set, generates comparison charts, and saves the best model.
+### `src/mlflow_setup.py`
+Sets up MLflow so every model training run is automatically recorded in a central dashboard.
 
-| What it does | Detail |
-|---|---|
-| Scores all models | Loads each `.pkl`, runs predictions on `X_test`, computes all 5 metrics |
-| Bar chart | 4-panel chart comparing AUC-ROC, F1, Precision, Recall side by side across all models |
-| ROC curves | One curve per model on the same plot — shows how well each model separates fraud from normal at every threshold. A curve that hugs the top-left corner is best |
-| Saves best model | Copies the highest AUC-ROC model to `models/best_model.pkl` for easy access |
+| Function | What it does |
+|----------|-------------|
+| `init_mlflow()` | Points MLflow at the local SQLite database and creates the `fraud-detection-benchmark` experiment. Called once before training starts |
+| `log_model_run()` | Called once per model — records the model name, all hyperparameters, all 5 metrics, and saves a copy of the fitted model. Prints a one-line summary to the console |
 
-**What is a ROC curve?** It plots True Positive Rate (fraud caught) vs False Positive Rate (normal flagged as fraud) as you change the decision threshold. The area under it (AUC-ROC) is the single best number to compare models on imbalanced data.
+**What gets recorded for each model:**
+
+| Item | Example |
+|------|---------|
+| Model name | `"XGBoost"` |
+| Hyperparameters | `n_estimators=300`, `max_depth=8`, `learning_rate=0.1` |
+| Metrics | `auc_roc=0.9802`, `f1=0.8155`, `recall=0.8571` |
+| Model artifact | A copy of the fitted model, stored and versioned by MLflow |
+| Model signature | What the input looks like (30 features) and what the output looks like (0 or 1) |
+
+**Folders and files created by this step:**
+
+```
+mlruns/                       ← new folder created here (gitignored)
+├── mlflow.db                 SQLite database — stores all run IDs, metrics, and parameters
+└── 1/                        folder for experiment ID 1 ("fraud-detection-benchmark")
+    └── models/m-<run-id>/    one sub-folder is created per model run
+        ├── artifacts/
+        │   ├── model.pkl         MLflow's own copy of the fitted model
+        │   ├── MLmodel           metadata file — records input/output schema and model flavour
+        │   ├── requirements.txt  exact packages needed to reload this model later
+        │   └── conda.yaml        conda environment for full reproducibility
+```
+
+Why does MLflow save its own copy of each model? So you can go back to any past run in the dashboard and reload the exact model that produced those metrics — even if you retrain and overwrite the file in `models/` later.
 
 ```bash
-python src/evaluation/compare_models.py
-```
-
-**Charts saved:**
-```
-data/processed/charts/
-├── metric_comparison.png   # 4-panel bar chart of all metrics across all models
-└── roc_curves.png          # All 9 ROC curves on one plot
-```
-
----
-
-### `src/models/tune_xgboost.py`
-Finds the best hyperparameters for XGBoost using GridSearchCV, then saves the tuned model.
-
-**What is GridSearchCV?** It tries every combination of settings you give it and picks the one with the best cross-validation score. Here it tries 27 combinations (3 × 3 × 3):
-
-| Parameter | Values tried | What it controls |
-|-----------|-------------|-----------------|
-| `n_estimators` | 100, 200, 300 | Number of trees — more trees = more accurate but slower |
-| `max_depth` | 4, 6, 8 | How deep each tree grows — deeper = learns more detail but risks overfitting |
-| `learning_rate` | 0.05, 0.1, 0.2 | How much each new tree corrects the previous — lower = more careful, needs more trees |
-
-**Best parameters found:** `n_estimators=300`, `max_depth=8`, `learning_rate=0.1`
-
-**Tuned XGBoost results on test set:**
-
-| Metric | Score | Meaning |
-|--------|-------|---------|
-| AUC-ROC | 0.9802 | Excellent separation between fraud and normal |
-| Recall | 0.8571 | Catches 85.7% of all actual fraud cases |
-| F1 | 0.8155 | Good balance between catching fraud and not over-flagging |
-
-**Files saved:**
-```
-models/
-├── best_model.pkl       # Highest AUC-ROC model from comparison (CatBoost)
-└── xgboost_final.pkl    # Tuned XGBoost — the model used in the API
-```
-
-Why use `xgboost_final.pkl` in the API if CatBoost scored higher? XGBoost is faster at inference, better documented, and the tuned version scores near identically. CatBoost's edge in AUC-ROC is marginal (0.9819 vs 0.9802).
-
-```bash
-python src/models/tune_xgboost.py
+# View all experiment runs in the browser
+mlflow ui --backend-store-uri sqlite:///mlruns/mlflow.db
+# then open http://localhost:5000
 ```
 
 ---
@@ -287,52 +282,52 @@ python src/models/tune_xgboost.py
 ## Step 5 — Train & Benchmark 9 Models
 
 ### `src/models/train_all_models.py`
-Trains all 9 models one by one, evaluates each on the untouched test set, logs everything to MLflow, and prints a final ranked comparison table.
+Trains all 9 models one by one on the SMOTE-balanced training data, evaluates each on the real test data, logs results to MLflow, and prints a ranked comparison table.
 
 **Why train on SMOTE data but test on raw data?**
-SMOTE is only used to help the model learn — the test set must stay original (imbalanced) to reflect real-world conditions where 99.83% of transactions are normal.
+SMOTE only helps the model learn — the test set must stay original (imbalanced) to reflect real life, where 99.83% of transactions are normal.
 
-**The 9 models and what each one does:**
+**Why AUC-ROC and not accuracy?**
+A model that predicts "normal" for every transaction gets 99.83% accuracy but catches zero fraud. AUC-ROC measures how well a model separates fraud from normal across all possible decision thresholds. A perfect model = 1.0. Random guessing = 0.5.
+
+**The 9 models:**
 
 | # | Model | How it works |
 |---|-------|-------------|
-| 1 | Logistic Regression | Draws a straight decision boundary — simple but fast baseline |
-| 2 | Decision Tree | Asks yes/no questions on features (e.g. "V14 < -2?") to reach a prediction |
-| 3 | Random Forest | Builds 100 decision trees independently and lets them vote — reduces overfitting |
-| 4 | Extra Trees | Like Random Forest but splits are chosen randomly — even faster, often similar accuracy |
-| 5 | AdaBoost | Trains trees sequentially, each one focusing harder on the examples the previous tree got wrong |
-| 6 | Gradient Boosting | Also sequential, but minimises a loss function mathematically at each step — more accurate than AdaBoost |
-| 7 | XGBoost | Optimised Gradient Boosting with regularisation to prevent overfitting — usually the winner |
-| 8 | LightGBM | Microsoft's gradient boosting — grows trees leaf-first instead of level-first, trains faster |
-| 9 | CatBoost | Yandex's gradient boosting — handles ordered data well, no need to tune as much |
+| 1 | Logistic Regression | Draws a straight decision boundary — fast and simple baseline |
+| 2 | Decision Tree | Asks yes/no questions on feature values to reach a prediction |
+| 3 | Random Forest | Builds 100 trees independently and takes a majority vote |
+| 4 | Extra Trees | Like Random Forest but tree splits are chosen randomly — faster |
+| 5 | AdaBoost | Trains trees one after another, each one focusing on the mistakes of the previous |
+| 6 | Gradient Boosting | Same idea as AdaBoost but mathematically more precise |
+| 7 | XGBoost | Optimised Gradient Boosting with regularisation — usually the strongest performer |
+| 8 | LightGBM | Microsoft's version — grows trees leaf-first, trains faster on large datasets |
+| 9 | CatBoost | Yandex's version — handles data ordering well, less tuning needed |
 
-**Why AUC-ROC is the primary metric (not accuracy):**
-A model that predicts "normal" for every transaction gets 99.83% accuracy but catches zero fraud. AUC-ROC measures how well the model ranks fraud above normal across all decision thresholds — a perfect model scores 1.0, random guessing scores 0.5.
+**Folders and files created by this step:**
 
-**Files in `models/` after training (10 total):**
 ```
-models/
-├── scaler.pkl              # From Step 3 — RobustScaler fitted on Amount & Time
-├── logistic_regression.pkl # Trained model #1
-├── decision_tree.pkl       # Trained model #2
-├── random_forest.pkl       # Trained model #3
-├── extra_trees.pkl         # Trained model #4
-├── adaboost.pkl            # Trained model #5
-├── gradient_boosting.pkl   # Trained model #6
-├── xgboost.pkl             # Trained model #7
-├── lightgbm.pkl            # Trained model #8
-└── catboost.pkl            # Trained model #9
-```
-`scaler.pkl` is not a model — it was created in Step 3 and lives here because the API needs it at inference time alongside the final model.
-Each `.pkl` is the fitted model saved with joblib. They are gitignored (too large) but regenerated by re-running this script.
+models/                          ← 9 new files added here
+├── logistic_regression.pkl      trained Logistic Regression — 1.5 KB
+├── decision_tree.pkl            trained Decision Tree      — 44 KB
+├── random_forest.pkl            trained Random Forest      — 16 MB (100 trees)
+├── extra_trees.pkl              trained Extra Trees        — 52 MB (100 trees)
+├── adaboost.pkl                 trained AdaBoost           — 64 KB
+├── gradient_boosting.pkl        trained Gradient Boosting  — 253 KB
+├── xgboost.pkl                  trained XGBoost (baseline) — 643 KB
+├── lightgbm.pkl                 trained LightGBM           — 692 KB
+└── catboost.pkl                 trained CatBoost           — 229 KB
 
-**MLflow logs per model:** hyperparameters + 5 metrics (`auc_roc`, `f1`, `precision`, `recall`, `accuracy`) + the model artifact itself.
+mlruns/1/models/                 ← 9 new run folders added by MLflow automatically
+```
+
+All `.pkl` files are gitignored (too large) but regenerated by re-running this script.
 
 ```bash
 python src/models/train_all_models.py
 ```
 
-### Model Benchmark Results
+### Benchmark Results (ranked by AUC-ROC)
 
 | Rank | Model | AUC-ROC | F1 | Precision | Recall | Accuracy |
 |------|-------|---------|----|-----------|----|---------|
@@ -346,55 +341,90 @@ python src/models/train_all_models.py
 | 8 | Logistic Regression | 0.9712 | 0.1110 | 0.0591 | 0.9184 | 0.9747 |
 | 9 | Decision Tree | 0.8704 | 0.1298 | 0.0704 | 0.8265 | 0.9809 |
 
+---
+
+## Step 6 — Model Comparison & XGBoost Tuning
+
+### `src/evaluation/compare_models.py`
+Loads all 9 trained models, scores them on the test set, generates visual comparison charts, and saves the best one.
+
+| What it does | Detail |
+|---|---|
+| Score all models | Loads each `.pkl` and runs predictions on `X_test` |
+| Bar chart | 4-panel chart — AUC-ROC, F1, Precision, Recall side by side for all 9 models |
+| ROC curves | All 9 models on one plot — a curve closer to the top-left corner = better fraud detection |
+| Save best | Copies the highest AUC-ROC model to `models/best_model.pkl` |
+
+**What is a ROC curve?** It shows how many frauds you catch vs how many normal transactions you accidentally flag, as you adjust the decision threshold. The area under it (AUC-ROC) is the single most useful number for comparing models on imbalanced data.
+
+**Folders and files created by this step:**
+
+```
+data/processed/charts/            ← new folder created here
+├── metric_comparison.png         4-panel bar chart comparing all 9 models across AUC-ROC, F1,
+│                                 Precision and Recall — shows which model wins on each metric
+└── roc_curves.png                all 9 ROC curves on one plot — each line is one model,
+                                  the diagonal dashed line = random guessing (AUC=0.5)
+
+models/
+└── best_model.pkl                copy of the best model by AUC-ROC — CatBoost (0.9819)
+```
+
 ```bash
-# View all runs live in the MLflow dashboard
-mlflow ui --backend-store-uri sqlite:///mlruns/mlflow.db
+python src/evaluation/compare_models.py
 ```
 
 ---
 
-## Step 4 — MLflow Experiment Tracking
+### `src/models/tune_xgboost.py`
+Finds the best settings for XGBoost by trying 27 combinations automatically, then saves the final tuned model.
 
-### `src/mlflow_setup.py`
-Configures MLflow and provides a reusable logging helper so every model training script logs results in exactly the same way.
+**What is GridSearchCV?** You give it a list of settings to try, it trains and tests every combination using cross-validation (splits the data multiple ways to get a fair average), and returns the winner.
 
-| Function | What it does |
-|----------|-------------|
-| `init_mlflow()` | Points MLflow at the SQLite database, creates the `fraud-detection-benchmark` experiment if it doesn't exist. Called once at the top of the training script |
-| `log_model_run()` | Called once per model — opens an MLflow run, logs all params and metrics, saves the fitted model as an artifact, then closes the run. Prints a one-line summary to the console |
+| Setting tested | Values tried | What it controls |
+|-----------|-------------|-----------------|
+| `n_estimators` | 100, 200, 300 | Number of trees — more = better but slower to train |
+| `max_depth` | 4, 6, 8 | How deep each tree grows — deeper = learns more patterns but can overfit |
+| `learning_rate` | 0.05, 0.1, 0.2 | How much each new tree corrects the previous one — smaller = slower but more stable |
 
-**What `log_model_run()` records for each model:**
+**Best combination found:** `n_estimators=300`, `max_depth=8`, `learning_rate=0.1`
 
-| Logged item | Example |
-|-------------|---------|
-| Tag | `model_name = "XGBoost"` |
-| Hyperparameters | `n_estimators=300`, `max_depth=6`, `learning_rate=0.1` |
-| Metrics | `auc_roc=0.9821`, `f1=0.8734`, `precision=0.912`, `recall=0.847`, `accuracy=0.9993` |
-| Model artifact | Fitted model saved and versioned inside MLflow |
-| Model signature | Input schema (30 features) + output schema (0 or 1) — used by the API |
+**Tuned XGBoost on test set:**
 
-### `mlruns/mlflow.db`
-SQLite database file auto-created when `init_mlflow()` runs for the first time. Stores all experiment metadata, run IDs, parameters, metrics, and artifact paths. Excluded from git via `.gitignore` — regenerated automatically when training runs.
+| Metric | Score | Plain meaning |
+|--------|-------|---------|
+| AUC-ROC | 0.9802 | Excellent at separating fraud from normal |
+| Recall | 0.8571 | Catches 85.7% of all actual fraud cases |
+| F1 | 0.8155 | Good balance between catching fraud and avoiding false alarms |
+
+**Files created by this step:**
+
+```
+models/
+└── xgboost_final.pkl    the tuned XGBoost — this is the model the API will serve
+
+mlruns/1/models/         one new run folder added by MLflow for the tuned run
+```
+
+Why serve `xgboost_final.pkl` in the API instead of `best_model.pkl` (CatBoost)? XGBoost is faster at inference time, more widely supported, and the score difference is tiny (0.9819 vs 0.9802).
 
 ```bash
-# Open MLflow dashboard after Step 5 trains the models
-mlflow ui --backend-store-uri sqlite:///mlruns/mlflow.db
-# then open http://localhost:5000
+python src/models/tune_xgboost.py
 ```
 
 ---
 
 ## CI/CD Pipeline (.github/workflows/)
 
-This folder is intentionally empty until **Step 10**. GitHub Actions automatically scans `.github/workflows/` for `.yml` files on every push. Once `ci-cd.yml` is added, every `git push` to `main` triggers:
+This folder is empty until **Step 10**. GitHub Actions scans `.github/workflows/` for `.yml` files on every push. Once `ci-cd.yml` is added, every `git push` to `main` automatically triggers:
 
 ```
 git push → GitHub Actions →
-  [1] Lint   — flake8 code style check
-  [2] Test   — pytest (all tests must pass)
-  [3] Build  — docker build
-  [4] Push   — push image to Docker Hub
-  [5] Deploy — trigger redeploy on Render
+  [1] Lint   — checks code style with flake8
+  [2] Test   — runs pytest, all tests must pass
+  [3] Build  — builds the Docker image
+  [4] Push   — pushes image to Docker Hub
+  [5] Deploy — triggers a redeploy on Render (live URL updates automatically)
 ```
 
 ---
@@ -407,5 +437,5 @@ git push → GitHub Actions →
 |----------|-------|
 | Total transactions | 284,807 |
 | Fraud cases | 492 (0.17%) |
-| Features | 30 (V1–V28 are PCA-transformed, plus Amount and Time) |
+| Features | 30 (V1–V28 are PCA-transformed by the bank + Amount and Time) |
 | Target | `Class` — 0 = normal, 1 = fraud |
