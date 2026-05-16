@@ -85,7 +85,7 @@ def tune():
 
     # save final model
     os.makedirs(MODELS_DIR, exist_ok=True)
-    out_path = os.path.join(MODELS_DIR, 'xgboost_tuned.pkl')
+    out_path = os.path.join(MODELS_DIR, 'xgboost_tuned.pkl')  # final model served by the API
     joblib.dump(best_model, out_path)
     print(f"\n  Saved : {out_path}")
     print("=" * 55)

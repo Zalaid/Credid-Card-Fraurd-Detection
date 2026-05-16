@@ -54,8 +54,8 @@ fraud-detection/
 │   ├── models/
 │   │   ├── __init__.py
 │   │   ├── train_all_models.py     # Trains all 9 models
-│   │   ├── tune_xgboost.py         # GridSearchCV tuning for XGBoost (comparison)
-│   │   └── tune_catboost.py        # GridSearchCV tuning for CatBoost (final model)
+│   │   ├── tune_xgboost.py         # GridSearchCV tuning — produces final model
+│   │   └── tune_catboost.py        # GridSearchCV tuning — kept for comparison
 │   ├── evaluation/
 │   │   ├── __init__.py
 │   │   └── compare_models.py       # Scores all models, generates charts
@@ -75,9 +75,9 @@ fraud-detection/
 │   ├── xgboost.pkl                 # Step 5
 │   ├── lightgbm.pkl                # Step 5
 │   ├── catboost.pkl                # Step 5
-│   ├── best_model.pkl              # Step 6 — highest AUC-ROC model (baseline CatBoost)
-│   ├── xgboost_tuned.pkl           # Step 6 — tuned XGBoost (for comparison)
-│   └── catboost_final.pkl          # Step 6 — tuned CatBoost (used in the API)
+│   ├── best_model.pkl              # Step 6 — baseline CatBoost copy (highest AUC-ROC)
+│   ├── xgboost_tuned.pkl           # Step 6 — FINAL MODEL served by the API
+│   └── catboost_final.pkl          # Step 6 — tuned CatBoost (kept for comparison)
 │
 ├── mlruns/
 │   ├── mlflow.db                   # SQLite database — all experiment runs & metrics
@@ -345,7 +345,7 @@ python src/models/train_all_models.py
 
 ---
 
-## Step 6 — Model Comparison & CatBoost Tuning
+## Step 6 — Model Comparison & Final Model Selection
 
 ### `src/evaluation/compare_models.py`
 Loads all 9 trained models, scores them on the test set, generates visual comparison charts, and saves the best one.
@@ -378,46 +378,76 @@ python src/evaluation/compare_models.py
 
 ---
 
-### `src/models/tune_catboost.py`
-Since CatBoost won the benchmark, we tune it — trying 27 setting combinations using GridSearchCV to see if we can push the score even higher.
+### `src/models/tune_xgboost.py` and `src/models/tune_catboost.py`
+After the benchmark, the top two models (CatBoost and XGBoost) were both tuned using GridSearchCV — trying 27 combinations each to find the best settings.
 
-**What is GridSearchCV?** You give it a list of settings to try, it trains and tests every combination using cross-validation (trains on part of the data, tests on another part, repeats 3 times), and picks the winner.
+**What is GridSearchCV?** You give it a list of settings to try. It trains and tests every combination using cross-validation (splits the data 3 ways, trains on 2 parts, tests on 1, repeats) and picks the winner.
 
-| Setting tested | Values tried | What it controls |
-|-----------|-------------|-----------------|
-| `iterations` | 200, 300, 500 | Number of trees — more = more accurate but slower |
-| `depth` | 4, 6, 8 | How deep each tree grows — deeper learns more detail but risks overfitting |
-| `learning_rate` | 0.05, 0.1, 0.2 | How much each new tree corrects the previous — smaller = more careful |
+**XGBoost settings tried:**
 
-**Best combination found:** `iterations=500`, `depth=8`, `learning_rate=0.1`
+| Setting | Values | What it controls |
+|---------|--------|-----------------|
+| `n_estimators` | 100, 200, 300 | Number of trees — more = more accurate but slower |
+| `max_depth` | 4, 6, 8 | How deep each tree — deeper learns more patterns but can overfit |
+| `learning_rate` | 0.05, 0.1, 0.2 | How much each tree corrects the previous — smaller = more stable |
 
-**Tuned CatBoost results on test set:**
+**Best XGBoost combination:** `n_estimators=300`, `max_depth=8`, `learning_rate=0.1`
 
-| Metric | Score | Plain meaning |
-|--------|-------|--------------|
-| AUC-ROC | 0.9759 | Very good separation between fraud and normal |
-| Recall | 0.8571 | Catches 85.7% of all actual fraud cases |
-| F1 | 0.7119 | Reasonable balance between catching fraud and avoiding false alarms |
-| Precision | 0.6087 | 61% of flagged transactions are actually fraud |
+**CatBoost settings tried:**
 
-**Why did tuning not beat the baseline?**
-CatBoost is specifically designed to work well with default settings — it already does internal tuning during training. When we applied SMOTE-balanced data, the cross-validation during GridSearchCV showed a perfect score (1.0), which is a sign it was memorising the synthetic training data rather than generalising. The baseline CatBoost (AUC-ROC=0.9819) still performs better on the real test set.
+| Setting | Values | What it controls |
+|---------|--------|-----------------|
+| `iterations` | 200, 300, 500 | Number of trees |
+| `depth` | 4, 6, 8 | Tree depth |
+| `learning_rate` | 0.05, 0.1, 0.2 | Learning step size |
+
+**Best CatBoost combination:** `iterations=500`, `depth=8`, `learning_rate=0.1`
+
+---
+
+### Full Model Comparison & Final Selection
+
+Here is every candidate compared side by side:
+
+| Model | AUC-ROC | F1 | Precision | Recall |
+|-------|---------|-----|-----------|--------|
+| Baseline CatBoost | 0.9819 | 0.6121 | 0.4699 | 0.8776 |
+| Baseline XGBoost | 0.9798 | 0.7288 | 0.6232 | 0.8776 |
+| **Tuned XGBoost** ✅ | **0.9802** | **0.8155** | **0.6232** | **0.8571** |
+| Tuned CatBoost | 0.9759 | 0.7119 | 0.6087 | 0.8571 |
+
+**What each metric means in plain English:**
+- **AUC-ROC** — Overall ability to tell fraud apart from normal. Higher = better at all thresholds
+- **Recall** — Out of every 100 actual frauds, how many did we catch? Missing fraud is costly
+- **Precision** — Out of every 100 transactions we flagged as fraud, how many were actually fraud? Low precision = too many false alarms
+- **F1** — The balance between Recall and Precision. A high F1 means you're catching fraud without raising too many false alarms
+
+**Why Tuned XGBoost was chosen as the final model:**
+
+1. **Best F1 score (0.8155)** — highest of all four candidates. F1 is the most important metric for a fraud detector because it forces a balance: you want to catch fraud (Recall) but you also don't want to block legitimate transactions all day (Precision). CatBoost's baseline F1 of 0.6121 means it flags too many innocent transactions.
+
+2. **Best Precision (0.6232)** — for every 100 transactions flagged as fraud, 62 are actually fraud. The baseline CatBoost only gets this right 47% of the time — meaning more than half its fraud alerts would be wrong.
+
+3. **AUC-ROC still excellent (0.9802)** — only 0.0017 below the baseline CatBoost. The difference is negligible in practice.
+
+4. **Why tuned CatBoost underperformed its baseline** — CatBoost is designed to already be near-optimal with default settings. Applying GridSearchCV on SMOTE-balanced data caused it to overfit the synthetic training examples (CV score hit 1.0 — a red flag). The default CatBoost generalises better.
+
+5. **XGBoost is faster at inference** — serving predictions in real time, XGBoost loads and runs faster, which matters for keeping API response time under 100ms.
 
 **Files created by this step:**
 
 ```
 models/
-├── catboost_final.pkl   tuned CatBoost — the model served by the API
-└── xgboost_tuned.pkl    tuned XGBoost kept for comparison (AUC-ROC=0.9802)
+├── xgboost_tuned.pkl    ← FINAL MODEL — served by the API
+├── catboost_final.pkl   tuned CatBoost — kept for reference
+└── best_model.pkl       baseline CatBoost copy — highest raw AUC-ROC
 
 mlruns/1/models/         two new run folders added by MLflow (one per tuned model)
 ```
 
-**Final model choice for the API:** `catboost_final.pkl`
-Even though the baseline CatBoost scored marginally higher, `catboost_final.pkl` represents a properly documented, explicitly tuned model — the right choice for a production pipeline.
-
 ```bash
-python src/models/tune_catboost.py
+python src/models/tune_xgboost.py    # produces xgboost_tuned.pkl  ← final
+python src/models/tune_catboost.py   # produces catboost_final.pkl  (comparison)
 ```
 
 ---
