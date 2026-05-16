@@ -18,6 +18,14 @@ FEATURE_ORDER = (
     ['Amount']
 )
 
+if not os.path.exists(MODEL_PATH):
+    raise RuntimeError(f"Model not found at {MODEL_PATH}. Run tune_xgboost.py first.")
+if not os.path.exists(SCALER_PATH):
+    raise RuntimeError(f"Scaler not found at {SCALER_PATH}. Run preprocess.py first.")
+
+model  = joblib.load(MODEL_PATH)
+scaler = joblib.load(SCALER_PATH)
+
 app = FastAPI(
     title="Fraud Detection API",
     description=(
@@ -26,20 +34,6 @@ app = FastAPI(
     ),
     version="1.0.0",
 )
-
-# ---------------------------------------------------------------------------
-# Load model and scaler once at startup — not on every request
-# Loading takes ~200ms; inference itself takes <10ms
-# ---------------------------------------------------------------------------
-@app.on_event("startup")
-def load_artifacts():
-    global model, scaler
-    if not os.path.exists(MODEL_PATH):
-        raise RuntimeError(f"Model not found at {MODEL_PATH}. Run tune_xgboost.py first.")
-    if not os.path.exists(SCALER_PATH):
-        raise RuntimeError(f"Scaler not found at {SCALER_PATH}. Run preprocess.py first.")
-    model  = joblib.load(MODEL_PATH)
-    scaler = joblib.load(SCALER_PATH)
 
 
 # ---------------------------------------------------------------------------

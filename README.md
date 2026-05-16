@@ -15,7 +15,7 @@ A machine learning project that trains and benchmarks 9 models on real credit ca
 | 5 | Train & benchmark 9 models | Done |
 | 6 | Model comparison & XGBoost tuning | Done |
 | 7 | FastAPI inference service | Done |
-| 8 | Tests | Pending |
+| 8 | Tests | Done |
 | 9 | Docker containerization | Pending |
 | 10 | CI/CD with GitHub Actions | Pending |
 | 11 | Deploy on Render | Pending |
@@ -89,9 +89,9 @@ fraud-detection/
 │
 ├── tests/
 │   ├── __init__.py
-│   ├── test_preprocessing.py       # (Step 8 — pending)
-│   ├── test_model.py               # (Step 8 — pending)
-│   └── test_api.py                 # (Step 8 — pending)
+│   ├── test_preprocessing.py       # Step 8 — 7 preprocessing tests
+│   ├── test_model.py               # Step 8 — 7 model correctness tests
+│   └── test_api.py                 # Step 8 — 14 API endpoint tests
 │
 ├── .github/
 │   └── workflows/
@@ -548,6 +548,68 @@ When the API is running, open `http://localhost:8000/docs` in your browser. It s
 uvicorn src.api.main:app --reload
 # then open http://localhost:8000
 ```
+
+---
+
+## Step 8 — Tests
+
+28 automated tests verify that every part of the pipeline works correctly. Run them all with one command:
+
+```bash
+venv\Scripts\python.exe -m pytest tests/ -v
+# 28 passed in ~3 seconds
+```
+
+### `tests/test_preprocessing.py` — 7 tests
+
+Checks that the preprocessing pipeline ran correctly and produced valid output.
+
+| Test | What it checks |
+|------|---------------|
+| `test_processed_files_exist` | All 6 `.pkl` split files are present in `data/processed/` |
+| `test_scaler_exists` | `models/scaler.pkl` exists — the API needs it at startup |
+| `test_train_test_shapes` | Train and test sets have the same number of columns (30) |
+| `test_smote_balanced` | After SMOTE, fraud and normal classes are exactly equal in the training set |
+| `test_test_set_untouched` | The test set fraud ratio is still under 1% — SMOTE never touched it |
+| `test_no_missing_values` | No NaN values in training or test features |
+| `test_scaler_transforms_correctly` | The scaler actually changes the values of Amount and Time |
+
+### `tests/test_model.py` — 7 tests
+
+Checks that the trained models are correct and the final model is production-ready.
+
+| Test | What it checks |
+|------|---------------|
+| `test_final_model_exists` | `models/xgboost_tuned.pkl` — the API's model — exists on disk |
+| `test_all_models_loadable` | All 11 `.pkl` model files load without errors |
+| `test_final_model_has_predict_proba` | The final model supports probability output (required by the API) |
+| `test_prediction_shape` | Model returns exactly one prediction per input row |
+| `test_prediction_values_are_binary` | All predictions are 0 or 1 — nothing in between |
+| `test_probabilities_between_0_and_1` | Fraud probabilities always stay in the valid 0–1 range |
+| `test_model_catches_some_fraud` | Model actually detects at least some fraud on the real test set |
+
+### `tests/test_api.py` — 14 tests
+
+Checks that the FastAPI endpoints behave correctly — correct responses, correct errors, correct schema.
+
+| Test | What it checks |
+|------|---------------|
+| `test_health_returns_200` | `/health` returns HTTP 200 |
+| `test_health_model_loaded` | `/health` reports `model_loaded: true` |
+| `test_root_returns_200` | `/` returns HTTP 200 |
+| `test_root_contains_endpoints` | `/` response includes the `endpoints` key |
+| `test_predict_fraud_transaction` | Known fraud row from dataset → `is_fraud: true`, probability > 0.5 |
+| `test_predict_normal_transaction` | Known normal row from dataset → `is_fraud: false`, probability < 0.5 |
+| `test_predict_response_has_required_fields` | Response always includes `is_fraud`, `fraud_probability`, `inference_ms` |
+| `test_predict_probability_in_range` | `fraud_probability` is between 0.0 and 1.0 |
+| `test_predict_inference_ms_is_positive` | `inference_ms` is a positive number |
+| `test_predict_all_zeros` | All-zero input does not crash — returns a valid response |
+| `test_predict_large_amount` | Very large amount does not crash — returns a valid response |
+| `test_predict_missing_field_returns_422` | Missing features returns HTTP 422 (Unprocessable Entity) |
+| `test_predict_negative_amount_returns_422` | Negative Amount returns HTTP 422 |
+| `test_predict_wrong_type_returns_422` | String where float expected returns HTTP 422 |
+
+The fraud and normal test rows come directly from `creditcard.csv` — real transactions that the model was not trained on (they are from the held-out test set), so passing these tests means the model generalises correctly.
 
 ---
 
