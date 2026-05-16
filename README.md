@@ -1731,6 +1731,156 @@ Container: validates input → scales features → XGBoost predicts → returns 
 
 ---
 
+## Your Live API Links — What Each One Is and What to Put in Your CV
+
+Your API is live at this base URL:
+```
+https://fraud-detection-api-latest-f3iz.onrender.com
+```
+
+Everything after the `/` is called an **endpoint** — a specific address that does a specific thing.
+
+---
+
+### All Four Links Explained
+
+#### 1. `/` — Root (API Info)
+```
+https://fraud-detection-api-latest-f3iz.onrender.com/
+```
+**What it returns:**
+```json
+{
+  "name": "Fraud Detection API",
+  "version": "1.0.0",
+  "model": "XGBoost (tuned)",
+  "endpoints": {
+    "POST /predict": "Send a transaction, get fraud prediction",
+    "GET  /health":  "Health check",
+    "GET  /docs":    "Interactive API documentation (Swagger UI)"
+  }
+}
+```
+**What it's for:** Just shows that the API is running and lists what endpoints exist. Not useful for end users — more of a welcome page.
+
+---
+
+#### 2. `/health` — Health Check
+```
+https://fraud-detection-api-latest-f3iz.onrender.com/health
+```
+**What it returns:**
+```json
+{"status": "ok", "model_loaded": true}
+```
+**What it's for:** A lightweight check that answers two questions:
+- Is the API server running? (`status: ok`)
+- Is the machine learning model loaded into memory and ready to make predictions? (`model_loaded: true`)
+
+**Who uses it:**
+- **Docker** uses it every 30 seconds to check if the container is healthy
+- **Render** checks it after every new deploy — if it returns 200, the deploy succeeded; if it fails, Render rolls back to the old version
+- **UptimeRobot** pings it every 5 minutes to keep the container awake and alert you if it goes down
+
+This endpoint does **no ML computation** — it just checks two variables and returns JSON. That is why it is used for health checks instead of `/predict` — it is instant and has zero cost.
+
+**How we get this link:** It is a route we defined in `src/api/main.py`:
+```python
+@app.get("/health")
+def health():
+    return {"status": "ok", "model_loaded": model is not None}
+```
+Render adds the base URL in front of it automatically.
+
+---
+
+#### 3. `/predict` — Fraud Prediction
+```
+https://fraud-detection-api-latest-f3iz.onrender.com/predict
+```
+**What it does:** This is the main endpoint. You send it 30 transaction features (Time, V1–V28, Amount) as JSON and it returns whether the transaction is fraud.
+
+**You cannot open this in a browser** directly — it only accepts POST requests with a JSON body. Use Swagger UI, curl, or Python requests to call it.
+
+**What it returns:**
+```json
+{
+  "is_fraud": true,
+  "fraud_probability": 1.0,
+  "inference_ms": 4.21
+}
+```
+
+**How we get this link:** It is a route defined in `src/api/main.py`:
+```python
+@app.post("/predict")
+def predict(transaction: TransactionInput):
+    ...
+```
+
+---
+
+#### 4. `/docs` — Swagger UI ← PUT THIS IN YOUR CV
+```
+https://fraud-detection-api-latest-f3iz.onrender.com/docs
+```
+**What it is:** An automatically generated interactive web page that FastAPI creates from your code. It reads all your routes and schemas and builds a browser-based testing interface — no curl, no Python, no terminal needed.
+
+**What a recruiter sees when they open it:**
+
+```
+┌──────────────────────────────────────────────────────┐
+│  Fraud Detection API  1.0.0                          │
+│                                                      │
+│  POST  /predict   ▼  [ Try it out ]                  │
+│  ────────────────────────────────────────────────    │
+│  Request body:                                       │
+│  {                                                   │
+│    "Time": 406,                                      │
+│    "V1": -2.3122,                                    │
+│    ... all 30 fields editable ...                    │
+│    "Amount": 0.0                                     │
+│  }                    [ Execute ]                    │
+│                                                      │
+│  Response:                                           │
+│  {                                                   │
+│    "is_fraud": true,                                 │
+│    "fraud_probability": 1.0,                         │
+│    "inference_ms": 4.21                              │
+│  }                                                   │
+└──────────────────────────────────────────────────────┘
+```
+
+They click **Try it out** → **Execute** → see a real fraud prediction in 2 seconds. No setup, no code, works in any browser. This is what makes it CV-worthy.
+
+**How we get this link:** FastAPI generates `/docs` automatically using a library called Swagger UI. We did not write any code for it — it reads our `TransactionInput` and `PredictionOutput` schemas from `schemas.py` and builds the page automatically.
+
+---
+
+### What to Put in Your CV
+
+```
+Fraud Detection MLOps Pipeline
+──────────────────────────────────────────────────────────────
+• Trained and benchmarked 9 ML models on 284,807 real transactions
+• Selected Tuned XGBoost: AUC-ROC 0.9802, F1 0.8155, Precision 0.62
+• Built FastAPI REST API with automated tests (28 passing)
+• Containerized with Docker, deployed CI/CD pipeline via GitHub Actions
+• Live demo: https://fraud-detection-api-latest-f3iz.onrender.com/docs
+• Code:      https://github.com/YOUR-USERNAME/fraud-detection
+```
+
+**Two links — two purposes:**
+
+| Link | What it shows |
+|------|--------------|
+| `/docs` (Swagger UI) | The recruiter can test the live model in their browser right now — interactive, no setup |
+| GitHub repo | The recruiter can read the code, see the commit history, check the CI/CD pipeline going green |
+
+**Do not put `/health` or `/predict` in your CV.** `/health` is not interesting to humans — it is for machines. `/predict` cannot be opened in a browser directly. `/docs` is the only link that works for a non-technical person with a browser.
+
+---
+
 ## Dataset
 
 **Credit Card Fraud Detection** — [Kaggle](https://www.kaggle.com/datasets/mlg-ulb/creditcardfraud)

@@ -53,7 +53,7 @@ def root():
     }
 
 
-@app.get("/health", tags=["Info"])
+@app.api_route("/health", methods=["GET", "HEAD"], tags=["Info"])
 def health():
     return {"status": "ok", "model_loaded": model is not None}
 
