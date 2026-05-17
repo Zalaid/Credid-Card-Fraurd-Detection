@@ -2056,3 +2056,208 @@ Raw CSV (284,807 rows)
 **Q: What would you do differently with more time?**
 
 "A few things: (1) Try threshold tuning — instead of 0.5, find the threshold that optimises the F1 score on a validation set. (2) Add SHAP values to explain why a transaction was flagged — critical for real-world trust. (3) Add data drift monitoring so we know when the model's input distribution starts to shift from what it was trained on."
+
+---
+
+## Step 12 — Hugging Face Spaces Deployment
+
+The API is deployed on a second platform — **Hugging Face Spaces** — in addition to Render. Both deployments run independently and serve the same model.
+
+**Live Space:** https://huggingface.co/spaces/Zalaid/Credid-Card-Fraud-Detection
+
+---
+
+### Why a Second Deployment?
+
+| Reason | Detail |
+|--------|--------|
+| Portfolio visibility | HF Spaces is where ML practitioners look for demos — more relevant audience than a generic cloud host |
+| HF ecosystem | Shows the model alongside other ML work, searchable on the HF Hub |
+| Free tier | HF Spaces free tier gives 16 GB RAM / 2 vCPUs — more than Render's free tier |
+| Docker support | HF Spaces runs Docker containers natively — zero rewrite needed |
+
+---
+
+### Branch Strategy — Keeping Render Alive
+
+The HF deployment required one change: HF Spaces **requires apps to listen on port 7860**, but Render uses port 8000. Changing the Dockerfile on `master` would break Render via CI/CD.
+
+Solution: a separate `hf-spaces` branch that never merges into `master`.
+
+```
+master  ──────────────────────────────────────►  GitHub → CI/CD → Render (port 8000)
+           \
+hf-spaces  └──────────────────────────────────►  HF remote → HF Spaces (port 7860)
+```
+
+- `git push origin` (to GitHub) → triggers CI/CD → Render
+- `git push hf hf-spaces:main` (to HF remote) → triggers HF build → HF Spaces
+- The two remotes are completely independent — pushing to one never affects the other
+
+```bash
+# The two remotes configured in this repo
+git remote -v
+# origin   https://github.com/...  (GitHub → Render)
+# hf       https://huggingface.co/spaces/Zalaid/Credid-Card-Fraud-Detection  (HF Spaces)
+```
+
+---
+
+### Changes Made on the `hf-spaces` Branch
+
+#### 1. `Dockerfile` — port changed to 7860
+
+```diff
+- EXPOSE 8000
++ EXPOSE 7860
+
+- CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
++ CMD ["./start.sh"]
+```
+
+The `CMD` was also changed from calling uvicorn directly to running `start.sh` — explained below.
+
+#### 2. `start.sh` — new file (downloads models at startup)
+
+HF Spaces does not allow large binary files (`.pkl`) in the regular git repo. HF uses a separate binary storage system called **XET storage** for files like model weights. These files are not part of the Docker build context, so `COPY models/*.pkl` in the Dockerfile would fail with "file not found."
+
+The fix: `start.sh` downloads the model files from the HF Space's own file storage at container startup, then launches uvicorn.
+
+```bash
+#!/bin/bash
+set -e
+
+mkdir -p models
+
+python - <<'EOF'
+from huggingface_hub import hf_hub_download
+import shutil, os
+
+for filename in ["models/xgboost_tuned.pkl", "models/scaler.pkl"]:
+    path = hf_hub_download(
+        repo_id="Zalaid/Credid-Card-Fraud-Detection",
+        filename=filename,
+        repo_type="space",
+    )
+    dest = filename
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    shutil.copy(path, dest)
+    print(f"Downloaded {filename}")
+EOF
+
+exec uvicorn src.api.main:app --host 0.0.0.0 --port 7860
+```
+
+**Why this works:** `hf_hub_download` pulls from HF's XET storage (where we uploaded the `.pkl` files) into the running container's filesystem before the API starts. The API code (`main.py`) is unchanged — it still loads from `models/xgboost_tuned.pkl` and `models/scaler.pkl` as normal.
+
+#### 3. `README.md` — HF Space metadata frontmatter
+
+HF Spaces requires a YAML block at the very top of `README.md` to configure the Space card (title, colour, SDK type). Without it, the Space shows a "configuration error."
+
+```yaml
+---
+title: Credit Card Fraud Detection API
+emoji: 💳
+colorFrom: red
+colorTo: yellow
+sdk: docker
+pinned: false
+---
+```
+
+This block only exists on the `hf-spaces` branch — the `master` README does not have it.
+
+---
+
+### Files Stored on HF Spaces
+
+HF Spaces holds two types of files in the same repo:
+
+| File | Storage type | How it got there |
+|------|-------------|-----------------|
+| `Dockerfile` | Regular git | `git push hf hf-spaces:main` |
+| `start.sh` | Regular git | `git push hf hf-spaces:main` |
+| `src/` (all Python) | Regular git | `git push hf hf-spaces:main` |
+| `requirements.txt` | Regular git | `git push hf hf-spaces:main` |
+| `README.md` (with YAML) | Regular git | `git push hf hf-spaces:main` |
+| `models/xgboost_tuned.pkl` | XET binary storage | `huggingface_hub.upload_file()` |
+| `models/scaler.pkl` | XET binary storage | `huggingface_hub.upload_file()` |
+
+The two `.pkl` files were uploaded using the HF Python SDK:
+
+```python
+from huggingface_hub import HfApi
+api = HfApi(token="<hf-write-token>")
+api.upload_file(
+    path_or_fileobj="models/xgboost_tuned.pkl",
+    path_in_repo="models/xgboost_tuned.pkl",
+    repo_id="Zalaid/Credid-Card-Fraud-Detection",
+    repo_type="space",
+)
+api.upload_file(
+    path_or_fileobj="models/scaler.pkl",
+    path_in_repo="models/scaler.pkl",
+    repo_id="Zalaid/Credid-Card-Fraud-Detection",
+    repo_type="space",
+)
+```
+
+---
+
+### Model Files on HF Spaces
+
+| File | Size | Purpose |
+|------|------|---------|
+| `models/xgboost_tuned.pkl` | ~1.5 MB | The tuned XGBoost classifier — the model that makes fraud predictions |
+| `models/scaler.pkl` | <1 KB | The fitted RobustScaler — scales `Amount` and `Time` before prediction |
+
+These are the same two files that Render loads. Both are gitignored in the main repo (`models/*.pkl`) and tracked in HF via XET storage instead.
+
+---
+
+### Errors Encountered and Fixes
+
+**Error 1 — Binary file rejected by git push**
+
+```
+remote: Your push was rejected because it contains binary files.
+remote: Please use https://huggingface.co/docs/hub/xet to store binary files.
+```
+
+HF no longer accepts `.pkl` files via git push. Fix: removed them from the commit with `git rm --cached` and uploaded them separately via `huggingface_hub.upload_file()`.
+
+**Error 2 — Docker build failed: model file not found**
+
+```
+ERROR: failed to calculate checksum of ref ...
+"/models/xgboost_tuned.pkl": not found
+```
+
+The Docker build ran from a commit that predated the API upload of the `.pkl` files. The `COPY models/xgboost_tuned.pkl` line in the Dockerfile had nothing to copy. Fix: replaced `COPY` with `start.sh` which downloads the files at container runtime instead of build time.
+
+**Error 3 — Invalid `colorTo` value in README metadata**
+
+```
+"colorTo" must be one of [red, yellow, green, blue, indigo, purple, pink, gray]
+```
+
+`colorTo: orange` is not a valid HF Space colour. Fix: changed to `colorTo: yellow`.
+
+**Error 4 — README metadata overwritten on every git push**
+
+Uploading the README via the HF Python API created a commit on HF's repo. The next `git push` from our local branch overwrote it with the project README (no YAML frontmatter), causing the "configuration error" again. Fix: added the YAML frontmatter directly to `README.md` on the `hf-spaces` branch so it is part of every push.
+
+---
+
+### What the Space Looks Like
+
+The Space serves the same FastAPI app as Render. There is no visual UI — visitors interact with it through the auto-generated **Swagger UI** at `/docs`.
+
+| Endpoint | URL |
+|----------|-----|
+| Root info (JSON) | `https://zalaid-credid-card-fraud-detection.hf.space/` |
+| Interactive docs | `https://zalaid-credid-card-fraud-detection.hf.space/docs` |
+| Health check | `https://zalaid-credid-card-fraud-detection.hf.space/health` |
+| Predict | `POST https://zalaid-credid-card-fraud-detection.hf.space/predict` |
+
+The `/docs` page lets anyone send a test transaction and see the fraud probability — no code required.
