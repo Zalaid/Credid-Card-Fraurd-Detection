@@ -1045,6 +1045,115 @@ Click any job to see every step with its output. If something fails, the red ✗
 
 ---
 
+### What Happens After You Type `git push` — Complete Walkthrough
+
+This section walks through every single thing that happens from the moment you press Enter on `git push origin master` to the moment the live API on Render is serving your new code. Nothing is skipped.
+
+---
+
+**Stage 0 — Your machine sends the code to GitHub**
+
+When you type `git push origin master`, git packages up all the new commits and sends them over the internet to GitHub's servers. GitHub stores the new code and records what changed. At this point nothing has been tested or deployed — the code is just sitting on GitHub.
+
+GitHub then looks inside the repository for any files in the `.github/workflows/` folder. It finds `ci-cd.yml`. It reads the `on: push: branches: [master]` line and realises: a push just happened to master, so the workflow should run. GitHub puts the workflow in a queue.
+
+---
+
+**Stage 1 — GitHub spins up a brand new server for Job 1 (test)**
+
+GitHub rents a fresh Ubuntu Linux server from its own infrastructure. This machine has never seen your code before — it has nothing on it. GitHub installs the tools it needs (git, Python support, etc.) and then starts running the steps you defined in `ci-cd.yml` one by one.
+
+**Step 1 — Checkout:** GitHub copies your entire repo onto this fresh server. Now the server has all your Python files, the Dockerfile, the requirements, the test files — everything that is in the git repo. But remember: `models/xgboost_tuned.pkl` and `models/scaler.pkl` are gitignored, so they are NOT here yet.
+
+**Step 2 — Install Python 3.11:** GitHub installs exactly Python 3.11 on this server. This makes sure the tests always run on the same Python version regardless of what GitHub's default is.
+
+**Step 3 — pip install:** Every package in `requirements.txt` is downloaded and installed — FastAPI, XGBoost, scikit-learn, pandas, everything. This takes about 60–90 seconds.
+
+**Step 4 & 5 — Download the model files:** The workflow uses `curl` to download `xgboost_tuned.pkl` and `scaler.pkl` from the GitHub Release you created (a one-time upload you did when setting up the project). These two files land in the `models/` folder on this server. Now the server has everything the API needs to start.
+
+**Step 6 — Run the tests:** pytest runs `tests/test_api.py`. This file has 14 tests. The TestClient from FastAPI actually starts the API inside the test process — no separate server needed — and fires real HTTP requests at it. The tests check things like: does `/health` return 200? Does `/predict` return the right fields? Does sending incomplete data return a 422 error?
+
+If every single test passes, Job 1 is marked green and GitHub moves on. If even one test fails, the entire pipeline stops here. Job 2 and Job 3 never run. Your code sits on GitHub but nothing is built or deployed. You get an email saying the pipeline failed.
+
+After Job 1 finishes, GitHub destroys this server. It is gone.
+
+---
+
+**Stage 2 — GitHub spins up a second brand new server for Job 2 (build-and-push)**
+
+This is a completely separate machine. It has no memory of Job 1. Every step has to be done again from scratch.
+
+**Step 1 — Checkout:** Same as before — your repo code is copied onto this server.
+
+**Step 2 — Download model files again:** The model files have to be downloaded again because this is a fresh server. The `curl` commands run again, pulling from the GitHub Release. Now the models are in `models/` on this server.
+
+**Step 3 — Log in to Docker Hub:** The workflow uses your `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` secrets (encrypted variables stored in GitHub settings, never visible in logs) to authenticate with Docker Hub. This is necessary to push images.
+
+**Step 4 — Build the Docker image:** This is the big step. Docker reads the `Dockerfile` top to bottom and executes every line:
+
+- It pulls the `python:3.11-slim` base image from Docker Hub — a minimal Linux with Python pre-installed
+- It sets `/app` as the working directory inside the container
+- It copies `requirements.txt` into the container and runs `pip install` — all packages get installed inside the image
+- It copies the entire `src/` folder into the container
+- It copies `models/xgboost_tuned.pkl` into the container (this is why we needed to download it in Step 2 — if it wasn't on the server, this COPY would fail)
+- It copies `models/scaler.pkl` into the container
+- The image is now a complete, self-contained package: Linux + Python + all packages + source code + trained model + scaler
+
+The result is a Docker image sitting on this GitHub server's disk. It is about 1.5–2 GB.
+
+**Step 5 & 6 — Push to Docker Hub:** The image is uploaded to Docker Hub under two tags. The `:latest` tag always points to the newest build — Render uses this. The `:abc1234` tag (the exact git commit SHA) is a permanent snapshot — if you ever need to roll back to a specific version, you can redeploy that exact SHA tag and know you're getting the exact code from that commit.
+
+After Job 2 finishes, GitHub destroys this server too.
+
+---
+
+**Stage 3 — GitHub runs Job 3 (deploy)**
+
+This job is tiny. It does one thing: it sends an HTTP POST request to a special URL that Render gave you — called a deploy hook. This URL is stored as a GitHub Secret called `RENDER_DEPLOY_HOOK`.
+
+When Render receives that POST request, it knows a new image is ready. Render then does the following automatically:
+
+- Pulls the new `:latest` image from Docker Hub
+- Starts a new container from that image
+- Waits for the new container's health check to pass (it calls `/health` and waits for a 200 response)
+- Once the new container is healthy, Render switches traffic to it
+- Stops and removes the old container
+
+This process means there is zero downtime during a deploy. The old container keeps serving requests until the new one is confirmed healthy.
+
+---
+
+**Stage 4 — The live API is updated**
+
+From this point on, anyone calling your Render URL is hitting the new container with the new code. The whole process from `git push` to live update takes about 3–5 minutes.
+
+Here is a timeline breakdown:
+
+| What is happening | Approximate time |
+|-------------------|-----------------|
+| GitHub queues and starts Job 1 | 5–15 seconds |
+| pip install in Job 1 | 60–90 seconds |
+| Running 14 tests | 10–20 seconds |
+| GitHub starts Job 2 | 5–15 seconds |
+| pip install inside Docker build | 60–90 seconds |
+| Uploading image to Docker Hub | 30–60 seconds |
+| Render pulling image and restarting | 30–60 seconds |
+| **Total** | **~3–5 minutes** |
+
+---
+
+**What happens if something goes wrong**
+
+If a test fails in Job 1, the pipeline stops. No new Docker image is built. Render is never notified. The live API keeps running the previous version, untouched. You get an email from GitHub telling you which test failed and showing the exact error output.
+
+If the Docker build fails in Job 2 (for example, a file is missing or a package can't be installed), the pipeline stops there. Render is never notified. The live API keeps running the previous version.
+
+If the deploy hook call in Job 3 fails (for example, a network issue), the new image is already on Docker Hub but Render wasn't told about it. You can manually trigger a redeploy from the Render dashboard in that case.
+
+In all failure cases, your live API never goes down. It simply stays on the last successfully deployed version until you fix the problem and push again.
+
+---
+
 ### Step 10 Setup — One-Time Configuration
 
 #### 1. Create the GitHub repository and push
