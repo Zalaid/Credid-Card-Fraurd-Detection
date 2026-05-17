@@ -15,6 +15,7 @@ venv/
 env/
 
 # Data files (too large for git)
+creditcard.csv
 data/raw/*.csv
 data/processed/
 
