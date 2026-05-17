@@ -2261,3 +2261,69 @@ The Space serves the same FastAPI app as Render. There is no visual UI — visit
 | Predict | `POST https://zalaid-credid-card-fraud-detection.hf.space/predict` |
 
 The `/docs` page lets anyone send a test transaction and see the fraud probability — no code required.
+
+---
+
+### Why HF Space Has Fewer Files Than Your Local Machine
+
+If you open the HF Space repo and compare it to your local project folder, you will notice most files are missing. This is completely normal and intentional. Here is why.
+
+**Your local machine has everything** — the raw dataset, processed data, all 9 trained model files, MLflow experiment logs, the EDA notebook, test files, virtual environment, and more. That is everything needed to reproduce the entire project from scratch: download data, preprocess it, train all models, evaluate them, and serve the final one.
+
+**The HF Space only has what the API needs to run.** It is not a full copy of the project — it is just the production server. Think of it like this: when a restaurant ships food to a customer, they do not also send the kitchen, the ingredients, and the chef. They send only the finished dish.
+
+Here is a breakdown of what is missing from HF Space and why:
+
+| What is missing | Why it is not on HF Space |
+|-----------------|--------------------------|
+| `data/raw/creditcard.csv` | 144 MB dataset — only needed for training, not serving predictions |
+| `data/processed/*.pkl` | Preprocessed training splits — only needed to train models |
+| `notebooks/01_eda.ipynb` | Analysis notebook — not needed at runtime |
+| `mlruns/` | MLflow experiment logs — only needed to compare models during development |
+| `models/logistic_regression.pkl`, `random_forest.pkl`, etc. | The 7 other models that lost the benchmark — the API only uses the winner |
+| `tests/` | Test suite — runs in CI/CD on GitHub, not needed on the server |
+| `venv/` | Virtual environment — Docker installs its own dependencies inside the container |
+| `data/processed/charts/` | Comparison charts — only needed during development |
+
+**What IS on HF Space** is the minimum needed to answer one question at runtime: "given this transaction's 30 features, is it fraud?"
+
+- The source code that runs the API (`src/`)
+- The final trained model (`models/xgboost_tuned.pkl`)
+- The scaler that was fitted during preprocessing (`models/scaler.pkl`)
+- The dependency list so Docker knows what to install (`requirements.txt`)
+- The startup script and Dockerfile so HF knows how to build and run the container
+
+Everything else is development-time tooling that has no role once the model is trained and the API is built.
+
+---
+
+### How Render and HF Spaces Are Both Running at the Same Time
+
+Both deployments are running the exact same FastAPI application, but they are two completely separate servers with no connection to each other. Here is how each one works:
+
+**Render** watches your GitHub repository. Every time you push code to the `master` branch on GitHub, Render automatically pulls the new code, rebuilds the Docker container, and redeploys it. Render reads from the `master` branch via the `origin` remote (GitHub).
+
+**HF Spaces** watches its own separate repository hosted on Hugging Face. Every time you push code to the `hf` remote (the HF Spaces repo), HF pulls the new code, rebuilds the Docker container, and redeploys it. HF reads from the `hf-spaces` branch via the `hf` remote (Hugging Face).
+
+They do not share a server, a container, or a deployment pipeline. They just happen to run the same code. If one goes down, the other keeps running. If you update one, the other is not affected.
+
+A useful analogy: imagine you have the same recipe and you give a copy to two different restaurants. Both cook the same dish independently in their own kitchens. Changing something in one kitchen does not change anything in the other.
+
+---
+
+### If You Push to GitHub, Does HF Space Update Too?
+
+**No. HF Space will not change at all.**
+
+This is the most important thing to understand about this setup. Your local machine has two remotes configured:
+
+- `origin` points to GitHub
+- `hf` points to Hugging Face
+
+When you run `git push`, git only pushes to the remote you name. If you run `git push origin master`, the code goes to GitHub and Render picks it up. HF Spaces does not receive anything and does not rebuild.
+
+To update HF Spaces, you have to explicitly push to the `hf` remote. Until you do that, HF Spaces keeps running whatever was last pushed there, forever — even if GitHub is ten commits ahead.
+
+This means the two deployments can be at different versions of the code at the same time. That is fine and even useful — you can push experimental changes to HF Spaces to test them without touching the Render deployment, or vice versa.
+
+The only way HF Space and Render could accidentally get out of sync in a bad way is if you forget to push a critical fix to one of them. To keep them in sync, any time you push an important change to `master` and want HF to match, you also need to merge that change into the `hf-spaces` branch and push to the `hf` remote separately.
