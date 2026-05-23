@@ -1,6 +1,6 @@
 # Fraud Detection MLOps Pipeline
 
-A machine learning project that trains and benchmarks 9 models on real credit card fraud data, selects the best model, and serves real-time predictions via a FastAPI REST API — packaged in Docker with full CI/CD.
+A machine learning project that trains and benchmarks 9 models on real credit card fraud data, selects the best model, and serves real-time predictions via a FastAPI REST API packaged in Docker with full CI/CD.
 
 ---
 
