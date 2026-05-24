@@ -19,7 +19,7 @@ A machine learning project that trains and benchmarks 9 models on real credit ca
 | 9 | Docker containerization | Done |
 | 10 | CI/CD with GitHub Actions | Done |
 | 11 | Deploy on Render | Done |
-| 12 | README & demo polish | Pending |
+| 12 | README & demo polish | Done |
 
 ---
 
