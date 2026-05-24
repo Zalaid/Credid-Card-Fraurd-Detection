@@ -1975,8 +1975,9 @@ Fraud Detection MLOps Pipeline
 • Selected Tuned XGBoost: AUC-ROC 0.9802, F1 0.8155, Precision 0.62
 • Built FastAPI REST API with automated tests (28 passing)
 • Containerized with Docker, deployed CI/CD pipeline via GitHub Actions
-• Live demo: https://fraud-detection-api-latest-f3iz.onrender.com/docs
-• Code:      https://github.com/Zalaid/Credid-Card-Fraurd-Detection
+• Live demo (Render):       https://fraud-detection-api-latest-f3iz.onrender.com/docs
+• Live demo (HF Spaces):   https://zalaid-credid-card-fraud-detection.hf.space/docs
+• Code:                    https://github.com/Zalaid/Credid-Card-Fraurd-Detection
 ```
 
 **Two links — two purposes:**
